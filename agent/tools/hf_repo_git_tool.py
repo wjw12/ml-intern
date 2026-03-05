@@ -653,10 +653,11 @@ HF_REPO_GIT_TOOL_SPEC = {
 }
 
 
-async def hf_repo_git_handler(arguments: Dict[str, Any]) -> tuple[str, bool]:
+async def hf_repo_git_handler(arguments: Dict[str, Any], session=None) -> tuple[str, bool]:
     """Handler for agent tool router."""
     try:
-        tool = HfRepoGitTool()
+        hf_token = session.hf_token if session else None
+        tool = HfRepoGitTool(hf_token=hf_token)
         result = await tool.execute(arguments)
         return result["formatted"], not result.get("isError", False)
     except Exception as e:

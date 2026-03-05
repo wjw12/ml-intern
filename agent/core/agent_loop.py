@@ -19,8 +19,7 @@ from agent.tools.jobs_tool import CPU_FLAVORS
 logger = logging.getLogger(__name__)
 
 ToolCall = ChatCompletionMessageToolCall
-# Explicit inference token — needed because litellm checks HF_TOKEN before
-# HUGGINGFACE_API_KEY, and HF_TOKEN (used for Hub ops) may lack inference permissions.
+# Explicit inference token for LLM API calls (separate from user OAuth tokens).
 _INFERENCE_API_KEY = os.environ.get("INFERENCE_TOKEN")
 
 
@@ -45,7 +44,7 @@ def _resolve_hf_router_params(model_name: str) -> dict:
 
     router_provider = parts[1]
     actual_model = parts[2]
-    api_key = _INFERENCE_API_KEY or os.environ.get("HF_TOKEN")
+    api_key = _INFERENCE_API_KEY
 
     return {
         "model": f"openai/{actual_model}",

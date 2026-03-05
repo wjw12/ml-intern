@@ -10,21 +10,17 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from huggingface_hub import HfApi
 from jinja2 import Template
 from litellm import Message, acompletion
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache for HF username — avoids repeating the slow whoami() call
-_hf_username_cache: str | None = None
-
 _HF_WHOAMI_URL = "https://huggingface.co/api/whoami-v2"
 _HF_WHOAMI_TIMEOUT = 5  # seconds
 
 
-def _get_hf_username() -> str:
-    """Return the HF username, cached after the first call.
+def _get_hf_username(hf_token: str | None = None) -> str:
+    """Return the HF username for the given token.
 
     Uses subprocess + curl to avoid Python HTTP client IPv6 issues that
     cause 40+ second hangs (httpx/urllib try IPv6 first which times out
@@ -34,15 +30,9 @@ def _get_hf_username() -> str:
     import subprocess
     import time as _t
 
-    global _hf_username_cache
-    if _hf_username_cache is not None:
-        return _hf_username_cache
-
-    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
     if not hf_token:
-        logger.warning("No HF_TOKEN set, using 'unknown' as username")
-        _hf_username_cache = "unknown"
-        return _hf_username_cache
+        logger.warning("No hf_token provided, using 'unknown' as username")
+        return "unknown"
 
     t0 = _t.monotonic()
     try:
@@ -64,21 +54,18 @@ def _get_hf_username() -> str:
         t1 = _t.monotonic()
         if result.returncode == 0 and result.stdout:
             data = json.loads(result.stdout)
-            _hf_username_cache = data.get("name", "unknown")
-            logger.info(
-                f"HF username resolved to '{_hf_username_cache}' in {t1 - t0:.2f}s"
-            )
+            username = data.get("name", "unknown")
+            logger.info(f"HF username resolved to '{username}' in {t1 - t0:.2f}s")
+            return username
         else:
             logger.warning(
                 f"curl whoami failed (rc={result.returncode}) in {t1 - t0:.2f}s"
             )
-            _hf_username_cache = "unknown"
+            return "unknown"
     except Exception as e:
         t1 = _t.monotonic()
         logger.warning(f"HF whoami failed in {t1 - t0:.2f}s: {e}")
-        _hf_username_cache = "unknown"
-
-    return _hf_username_cache
+        return "unknown"
 
 
 class ContextManager:
@@ -91,10 +78,12 @@ class ContextManager:
         untouched_messages: int = 5,
         tool_specs: list[dict[str, Any]] | None = None,
         prompt_file_suffix: str = "system_prompt_v3.yaml",
+        hf_token: str | None = None,
     ):
         self.system_prompt = self._load_system_prompt(
             tool_specs or [],
             prompt_file_suffix="system_prompt_v3.yaml",
+            hf_token=hf_token,
         )
         self.max_context = max_context
         self.compact_size = int(max_context * compact_size)
@@ -106,6 +95,7 @@ class ContextManager:
         self,
         tool_specs: list[dict[str, Any]],
         prompt_file_suffix: str = "system_prompt.yaml",
+        hf_token: str | None = None,
     ):
         """Load and render the system prompt from YAML file with Jinja2"""
         prompt_file = Path(__file__).parent.parent / "prompts" / f"{prompt_file_suffix}"
@@ -121,8 +111,8 @@ class ContextManager:
         current_time = now.strftime("%H:%M:%S.%f")[:-3]
         current_timezone = f"{now.strftime('%Z')} (UTC{now.strftime('%z')[:3]}:{now.strftime('%z')[3:]})"
 
-        # Get HF user info (cached after the first call)
-        hf_user_info = _get_hf_username()
+        # Get HF user info from OAuth token
+        hf_user_info = _get_hf_username(hf_token)
 
         template = Template(template_str)
         return template.render(

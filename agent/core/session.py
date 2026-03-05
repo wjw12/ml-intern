@@ -80,7 +80,9 @@ class Session:
         config: Config | None = None,
         tool_router=None,
         context_manager: ContextManager | None = None,
+        hf_token: str | None = None,
     ):
+        self.hf_token: Optional[str] = hf_token
         self.tool_router = tool_router
         tool_specs = tool_router.get_tool_specs_for_llm() if tool_router else []
         self.context_manager = context_manager or ContextManager(
@@ -88,6 +90,7 @@ class Session:
             compact_size=0.1,
             untouched_messages=5,
             tool_specs=tool_specs,
+            hf_token=hf_token,
         )
         self.event_queue = event_queue
         self.session_id = str(uuid.uuid4())
@@ -97,8 +100,6 @@ class Session:
         self.is_running = True
         self._cancelled = asyncio.Event()
         self.pending_approval: Optional[dict[str, Any]] = None
-        # User's HF OAuth token — set by session_manager after construction
-        self.hf_token: Optional[str] = None
         self.sandbox = None
 
         # Session trajectory logging

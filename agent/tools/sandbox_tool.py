@@ -12,7 +12,6 @@ a cpu-basic sandbox is auto-created (no approval needed).
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
 from huggingface_hub import HfApi, SpaceHardware
@@ -38,11 +37,7 @@ async def _ensure_sandbox(
     if not session:
         return None, "No session available."
 
-    token = (
-        getattr(session, "hf_token", None)
-        or os.environ.get("HF_TOKEN")
-        or os.environ.get("HUGGINGFACE_HUB_TOKEN")
-    )
+    token = session.hf_token
     if not token:
         return None, "No HF token available. Cannot create sandbox."
 

@@ -6,7 +6,6 @@ to provide everything needed for ML tasks in a single tool call.
 """
 
 import asyncio
-import os
 from typing import Any, TypedDict
 
 import httpx
@@ -29,7 +28,6 @@ class SplitConfig(TypedDict):
 
 def _get_headers(token: str | None = None) -> dict:
     """Get auth headers for private/gated datasets"""
-    token = token or os.environ.get("HF_TOKEN")
     if token:
         return {"Authorization": f"Bearer {token}"}
     return {}

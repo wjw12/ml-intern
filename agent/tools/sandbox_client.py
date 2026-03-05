@@ -37,7 +37,6 @@ Tools: bash, read, write, edit, upload
 from __future__ import annotations
 
 import io
-import os
 import sys
 import time
 import uuid
@@ -240,7 +239,6 @@ class Sandbox:
     _files_read: set = field(init=False, repr=False, default_factory=set)
 
     def __post_init__(self):
-        self.token = self.token or os.environ.get("HF_TOKEN")
         slug = self.space_id.replace("/", "-")
         # Trailing slash is critical: httpx resolves relative paths against base_url.
         # Without it, client.get("health") resolves to /health instead of /api/health.
@@ -282,13 +280,12 @@ class Sandbox:
             hardware: Hardware tier (cpu-basic, t4-small, etc.).
             private: Whether the Space should be private.
             sleep_time: Auto-sleep after N seconds of inactivity.
-            token: HF API token. Falls back to HF_TOKEN env var.
+            token: HF API token (from user's OAuth session).
             wait_timeout: Max seconds to wait for Space to start (default: 300).
 
         Returns:
             A Sandbox instance connected to the running Space.
         """
-        token = token or os.environ.get("HF_TOKEN")
         api = HfApi(token=token)
 
         base = name or "sandbox"

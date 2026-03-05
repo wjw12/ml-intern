@@ -135,8 +135,7 @@ def _add_default_env(params: Dict[str, Any] | None) -> Dict[str, Any]:
 def _add_environment_variables(
     params: Dict[str, Any] | None, user_token: str | None = None
 ) -> Dict[str, Any]:
-    # Prefer the authenticated user's OAuth token, fall back to global env var
-    token = user_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or ""
+    token = user_token or ""
 
     # Start with user-provided env vars, then force-set token last
     result = dict(params or {})
@@ -294,8 +293,11 @@ class HfJobsTool:
         log_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         session: Any = None,
         tool_call_id: Optional[str] = None,
+        user_token: Optional[str] = None,
     ):
         self.hf_token = hf_token
+        # user_token is injected into job secrets; hf_token is for API calls (job creation)
+        self.user_token = user_token or hf_token
         self.api = HfApi(token=hf_token)
         self.namespace = namespace
         self.log_callback = log_callback
@@ -520,7 +522,7 @@ class HfJobsTool:
                 image=image,
                 command=command,
                 env=_add_default_env(args.get("env")),
-                secrets=_add_environment_variables(args.get("secrets"), self.hf_token),
+                secrets=_add_environment_variables(args.get("secrets"), self.user_token),
                 flavor=args.get("hardware_flavor", "cpu-basic"),
                 timeout=args.get("timeout", "30m"),
                 namespace=self.namespace,
@@ -752,7 +754,7 @@ To verify, call this tool with `{{"operation": "inspect", "job_id": "{job_id}"}}
                 command=command,
                 schedule=schedule,
                 env=_add_default_env(args.get("env")),
-                secrets=_add_environment_variables(args.get("secrets"), self.hf_token),
+                secrets=_add_environment_variables(args.get("secrets"), self.user_token),
                 flavor=args.get("hardware_flavor", "cpu-basic"),
                 timeout=args.get("timeout", "30m"),
                 namespace=self.namespace,
@@ -1055,17 +1057,15 @@ async def hf_jobs_handler(
                 return f"Failed to read {script} from sandbox: {result.error}", False
             arguments = {**arguments, "script": result.output}
 
-        # Prefer the authenticated user's OAuth token, fall back to global env
-        hf_token = (
-            (getattr(session, "hf_token", None) if session else None)
-            or os.environ.get("HF_TOKEN")
-            or os.environ.get("HUGGINGFACE_HUB_TOKEN")
-        )
-        namespace = os.environ.get("HF_NAMESPACE") or (HfApi(token=hf_token).whoami().get("name") if hf_token else None)
+        user_token = session.hf_token if session else None
+        # HF_ADMIN_TOKEN creates jobs under the org; user token is injected into job secrets
+        admin_token = os.environ.get("HF_ADMIN_TOKEN") or user_token
+        namespace = os.environ.get("HF_NAMESPACE") or (HfApi(token=admin_token).whoami().get("name") if admin_token else None)
 
         tool = HfJobsTool(
             namespace=namespace,
-            hf_token=hf_token,
+            hf_token=admin_token,
+            user_token=user_token,
             log_callback=log_callback if session else None,
             session=session,
             tool_call_id=tool_call_id,

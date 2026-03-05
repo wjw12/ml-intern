@@ -132,15 +132,15 @@ class SessionManager:
         def _create_session_sync():
             t0 = _time.monotonic()
             tool_router = ToolRouter(self.config.mcpServers)
-            session = Session(event_queue, config=self.config, tool_router=tool_router)
+            session = Session(
+                event_queue, config=self.config, tool_router=tool_router,
+                hf_token=hf_token,
+            )
             t1 = _time.monotonic()
             logger.info(f"Session initialized in {t1 - t0:.2f}s")
             return tool_router, session
 
         tool_router, session = await asyncio.to_thread(_create_session_sync)
-
-        # Store user's HF token on the session so tools can use it
-        session.hf_token = hf_token
 
         # Create wrapper
         agent_session = AgentSession(

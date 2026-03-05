@@ -6,19 +6,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-
-load_dotenv()
-
-# Ensure HF_TOKEN is set — fall back to HF_ADMIN_TOKEN if available (HF Spaces)
-if not os.environ.get("HF_TOKEN") and os.environ.get("HF_ADMIN_TOKEN"):
-    os.environ["HF_TOKEN"] = os.environ["HF_ADMIN_TOKEN"]
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-
 from routes.agent import router as agent_router
 from routes.auth import router as auth_router
+
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
