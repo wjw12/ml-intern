@@ -41,7 +41,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from huggingface_hub import CommitOperationAdd, HfApi
@@ -265,6 +265,7 @@ class Sandbox:
         sleep_time: int | None = None,
         token: str | None = None,
         wait_timeout: int = WAIT_TIMEOUT,
+        log: "Callable[[str], object] | None" = None,
     ) -> Sandbox:
         """
         Create a new sandbox by duplicating the template Space.
@@ -286,13 +287,14 @@ class Sandbox:
         Returns:
             A Sandbox instance connected to the running Space.
         """
+        _log = log or print
         api = HfApi(token=token)
 
         base = name or "sandbox"
         suffix = uuid.uuid4().hex[:8]
         space_id = f"{owner}/{base}-{suffix}"
 
-        print(f"Creating sandbox: {space_id} (from {template})...")
+        _log(f"Creating sandbox: {space_id} (from {template})...")
 
         kwargs = {
             "from_id": template,
@@ -304,25 +306,25 @@ class Sandbox:
             kwargs["sleep_time"] = sleep_time
 
         api.duplicate_space(**kwargs)
-        print(f"Space created: https://huggingface.co/spaces/{space_id}")
+        _log(f"Space created: https://huggingface.co/spaces/{space_id}")
 
         # Upload sandbox server and Dockerfile (triggers rebuild)
-        cls._setup_server(space_id, api)
+        cls._setup_server(space_id, api, log=_log)
 
         # Wait for it to come online (rebuild + start)
-        print(f"Waiting for Space to start (timeout: {wait_timeout}s)...")
+        _log(f"Waiting for Space to start (timeout: {wait_timeout}s)...")
         deadline = time.time() + wait_timeout
         while time.time() < deadline:
             runtime = api.get_space_runtime(space_id)
             if runtime.stage == "RUNNING":
-                print(f"Space is running (hardware: {runtime.hardware})")
+                _log(f"Space is running (hardware: {runtime.hardware})")
                 break
             if runtime.stage in ("RUNTIME_ERROR", "BUILD_ERROR"):
                 raise RuntimeError(
                     f"Space failed to start: {runtime.stage}. "
                     f"Check https://huggingface.co/spaces/{space_id}"
                 )
-            print(f"  {runtime.stage}...")
+            _log(f"  {runtime.stage}...")
             time.sleep(WAIT_INTERVAL)
         else:
             raise TimeoutError(
@@ -333,17 +335,17 @@ class Sandbox:
         # Wait for the API server to be responsive (non-fatal)
         sb = cls(space_id=space_id, token=token, _owns_space=True)
         try:
-            sb._wait_for_api(timeout=API_WAIT_TIMEOUT)
+            sb._wait_for_api(timeout=API_WAIT_TIMEOUT, log=_log)
         except TimeoutError as e:
-            print(
+            _log(
                 f"Warning: API health check timed out ({e}), but Space is RUNNING. Continuing."
             )
         return sb
 
     @staticmethod
-    def _setup_server(space_id: str, api: HfApi) -> None:
+    def _setup_server(space_id: str, api: HfApi, *, log: Callable[[str], object] = print) -> None:
         """Upload embedded sandbox server + Dockerfile to the Space (single commit)."""
-        print(f"Uploading sandbox server to {space_id}...")
+        log(f"Uploading sandbox server to {space_id}...")
         api.create_commit(
             repo_id=space_id,
             repo_type="space",
@@ -359,7 +361,7 @@ class Sandbox:
             ],
             commit_message="Setup sandbox server",
         )
-        print("Server files uploaded, rebuild triggered.")
+        log("Server files uploaded, rebuild triggered.")
 
     @classmethod
     def connect(cls, space_id: str, *, token: str | None = None) -> Sandbox:
@@ -372,7 +374,7 @@ class Sandbox:
         sb._wait_for_api(timeout=60)
         return sb
 
-    def _wait_for_api(self, timeout: int = API_WAIT_TIMEOUT):
+    def _wait_for_api(self, timeout: int = API_WAIT_TIMEOUT, log: Callable[[str], object] = print):
         """Poll the health endpoint until the server responds."""
         deadline = time.time() + timeout
         last_err = None
@@ -382,7 +384,7 @@ class Sandbox:
                 resp = self._client.get("health", timeout=10)
                 last_status = resp.status_code
                 if resp.status_code == 200:
-                    print(f"API is responsive at {self._base_url}")
+                    log(f"API is responsive at {self._base_url}")
                     return
             except Exception as e:
                 last_err = e

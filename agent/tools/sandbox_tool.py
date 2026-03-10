@@ -89,7 +89,18 @@ async def _ensure_sandbox(
         )
     )
 
-    kwargs = {"owner": owner, "hardware": hardware, "token": token, "sleep_time": 1500, **create_kwargs}
+    # Thread-safe log callback: posts tool_log events from the worker thread
+    loop = asyncio.get_running_loop()
+
+    def _log(msg: str) -> None:
+        loop.call_soon_threadsafe(
+            session.event_queue.put_nowait,
+            Event(event_type="tool_log", data={"tool": "sandbox", "log": msg}),
+        )
+
+    kwargs = {"owner": owner, "hardware": hardware, "token": token, "log": _log, **create_kwargs}
+    if hardware != "cpu-basic":
+        kwargs["sleep_time"] = 1500
     sb = await asyncio.to_thread(Sandbox.create, **kwargs)
     session.sandbox = sb
 
@@ -120,6 +131,10 @@ SANDBOX_CREATE_TOOL_SPEC = {
         "or the script is copied from a verified working example with minimal changes.\n\n"
         "For ML code that uses CUDA, bf16, or model loading: use GPU hardware (t4-small minimum). "
         "CPU sandboxes cannot run GPU code paths — your test will not catch GPU-related errors.\n\n"
+        "Before choosing hardware, estimate your VRAM needs (models you run, training data size). Rule of thumb: bf16/fp16 ≈ 2 bytes/param, "
+        "fp32 ≈ 4 bytes/param, plus ~20% overhead for optimizer states during training.\n"
+        "Common picks: t4-small (16GB VRAM, fits ≤1-3B), a10g-small (24GB, ≤7B), a100-large (80GB, ≤30B). "
+        "If the model won't fit, pick larger hardware upfront — OOM on a sandbox wastes time.\n\n"
         "Hardware: " + ", ".join([e.value for e in SpaceHardware]) + ".\n"
     ),
     "parameters": {

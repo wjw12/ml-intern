@@ -98,12 +98,13 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       },
       onToolLog: (tool: string, log: string) => {
         if (!isActiveRef.current) return;
-        if (tool === 'hf_jobs') {
+        if (tool === 'hf_jobs' || tool === 'sandbox') {
           const state = useAgentStore.getState();
           const existingOutput = state.panelData?.output?.content || '';
+          const header = tool === 'sandbox' ? '--- Sandbox creation ---' : '--- Job execution started ---';
           const newContent = existingOutput
             ? existingOutput + '\n' + log
-            : '--- Job execution started ---\n' + log;
+            : header + '\n' + log;
 
           setPanelOutput({ content: newContent, language: 'text' });
 

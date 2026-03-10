@@ -466,11 +466,17 @@ class HfJobsTool:
                     await asyncio.sleep(retry_delay)
                     continue
 
-        # Fetch final job status
-        job_info = await _async_call(
-            self.api.inspect_job, job_id=job_id, namespace=namespace
-        )
-        final_status = job_info.status.stage
+        # Fetch final job status — retry briefly if still RUNNING
+        # (the API may lag a few seconds behind the log stream ending)
+        final_status = "UNKNOWN"
+        for _ in range(6):
+            job_info = await _async_call(
+                self.api.inspect_job, job_id=job_id, namespace=namespace
+            )
+            final_status = job_info.status.stage
+            if final_status in terminal_states:
+                break
+            await asyncio.sleep(2.5)
 
         return final_status, all_logs
 
@@ -547,6 +553,20 @@ class HfJobsTool:
                 job_id=job.id,
                 namespace=self.namespace,
             )
+
+            # Notify frontend of final status
+            if self.session and self.tool_call_id:
+                await self.session.send_event(
+                    Event(
+                        event_type="tool_state_change",
+                        data={
+                            "tool_call_id": self.tool_call_id,
+                            "tool": "hf_jobs",
+                            "state": final_status.lower(),
+                            "jobUrl": job.url,
+                        },
+                    )
+                )
 
             # Filter out UV package installation output
             filtered_logs = _filter_uv_install_output(all_logs)
