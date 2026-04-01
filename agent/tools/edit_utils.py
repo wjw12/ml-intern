@@ -227,46 +227,28 @@ def apply_edit(
 def validate_python(content: str, path: str = "") -> list[str]:
     """Lightweight post-write validation for Python files.
 
+    Checks syntax and training script conventions. This runs on the host
+    (not in the sandbox), so it only does static checks — no import resolution
+    or signature inspection since packages are installed in the sandbox, not here.
+
+    The sandbox server has its own richer version that does real signature
+    inspection against installed packages.
+
     Returns a list of warning strings (empty = all good).
     Never raises — validation failures are advisory only.
     """
     import ast
-    import importlib
 
     warnings = []
 
     # 1. Syntax check via ast.parse
     try:
-        tree = ast.parse(content)
+        ast.parse(content)
     except SyntaxError as e:
         warnings.append(f"Python syntax error at line {e.lineno}: {e.msg}")
-        return warnings  # can't do import checks on broken syntax
+        return warnings
 
-    # 2. Validate imports resolve
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if node.module:
-                try:
-                    mod = importlib.import_module(node.module)
-                    for alias in node.names:
-                        if alias.name != "*" and not hasattr(mod, alias.name):
-                            warnings.append(
-                                f"Import warning: '{alias.name}' not found in '{node.module}' (line {node.lineno})"
-                            )
-                except ImportError as e:
-                    warnings.append(f"Import error: {e} (line {node.lineno})")
-                except Exception:
-                    pass  # skip non-importable modules (e.g. project-local)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                try:
-                    importlib.import_module(alias.name)
-                except ImportError as e:
-                    warnings.append(f"Import error: {e} (line {node.lineno})")
-                except Exception:
-                    pass
-
-    # 3. Training script heuristics
+    # 2. Training script heuristics
     if any(kw in content for kw in ("TrainingArguments", "SFTConfig", "DPOConfig", "GRPOConfig")):
         if "push_to_hub" not in content:
             warnings.append(

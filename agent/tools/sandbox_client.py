@@ -262,33 +262,77 @@ def _apply_edit(content, old_str, new_str, mode="replace", replace_all=False):
     raise ValueError(f"Unknown mode: {mode}")
 
 def _validate_python(content, path=""):
-    """Lightweight Python validation. Returns list of warning strings."""
-    import ast as _ast, importlib as _il
+    """Validate Python: syntax, kwargs against real installed signatures, training heuristics.
+
+    Runs inside the sandbox where packages are pip-installed, so we can actually
+    import classes and inspect their __init__ signatures to catch kwarg mismatches
+    before runtime.
+    """
+    import ast as _ast, inspect as _inspect, importlib as _il
     warnings = []
+
+    # 1. Syntax check
     try:
         tree = _ast.parse(content)
     except SyntaxError as e:
         warnings.append(f"Python syntax error at line {e.lineno}: {e.msg}")
         return warnings
+
+    # 2. Build import map: name -> module path (from the script's own imports)
+    import_map = {}
     for node in _ast.walk(tree):
         if isinstance(node, _ast.ImportFrom) and node.module:
-            try:
-                mod = _il.import_module(node.module)
-                for alias in node.names:
-                    if alias.name != "*" and not hasattr(mod, alias.name):
-                        warnings.append(f"Import warning: '{alias.name}' not found in '{node.module}' (line {node.lineno})")
-            except ImportError as e:
-                warnings.append(f"Import error: {e} (line {node.lineno})")
-            except Exception:
-                pass
+            for alias in (node.names or []):
+                local_name = alias.asname or alias.name
+                import_map[local_name] = (node.module, alias.name)
         elif isinstance(node, _ast.Import):
-            for alias in node.names:
-                try:
-                    _il.import_module(alias.name)
-                except ImportError as e:
-                    warnings.append(f"Import error: {e} (line {node.lineno})")
-                except Exception:
-                    pass
+            for alias in (node.names or []):
+                local_name = alias.asname or alias.name
+                import_map[local_name] = (alias.name, None)
+
+    # 3. For each Call node, resolve the callable and check kwargs against signature
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Call):
+            continue
+        # Skip calls with **kwargs unpacking — we can't statically know those keys
+        if any(kw.arg is None for kw in node.keywords):
+            continue
+        call_kwargs = [kw.arg for kw in node.keywords if kw.arg]
+        if not call_kwargs:
+            continue
+
+        # Resolve the callable name
+        func_name = None
+        if isinstance(node.func, _ast.Name):
+            func_name = node.func.id
+        elif isinstance(node.func, _ast.Attribute):
+            func_name = node.func.attr
+        if not func_name or func_name not in import_map:
+            continue
+
+        # Try to import and inspect the real callable
+        module_path, attr_name = import_map[func_name]
+        try:
+            mod = _il.import_module(module_path)
+            obj = getattr(mod, attr_name, None) if attr_name else mod
+            if obj is None:
+                continue
+            sig = _inspect.signature(obj)
+            params = sig.parameters
+            # If **kwargs is in the signature, any kwarg is valid
+            if any(p.kind == _inspect.Parameter.VAR_KEYWORD for p in params.values()):
+                continue
+            valid_names = set(params.keys())
+            for kw_name in call_kwargs:
+                if kw_name not in valid_names:
+                    warnings.append(
+                        f"Invalid kwarg: {func_name}({kw_name}=...) at line {node.lineno} "
+                        f"-- not accepted by {module_path}.{attr_name or func_name}()"
+                    )
+        except Exception:
+            pass  # can't import/inspect — skip silently
+
+    # 4. Training script heuristics
     if any(kw in content for kw in ("TrainingArguments", "SFTConfig", "DPOConfig", "GRPOConfig")):
         if "push_to_hub" not in content:
             warnings.append("Training script warning: no \'push_to_hub\' found")
