@@ -65,30 +65,73 @@ def print_tool_output(output: str, success: bool, truncate: bool = True) -> None
 
 
 class SubAgentDisplay:
-    """Live-updating display: header with stats + rolling 2-line tool calls."""
+    """Live-updating display: header with stats (ticks every second) + rolling 2-line tool calls."""
 
     _MAX_VISIBLE = 2
 
     def __init__(self):
         self._calls: list[str] = []
-        self._stats: str = ""
+        self._tool_count = 0
+        self._token_count = 0
+        self._start_time: float | None = None
         self._lines_on_screen = 0
+        self._ticker_task = None
 
-    def set_stats(self, stats: str) -> None:
-        """Update the stats line and redraw."""
-        self._stats = stats
+    def start(self) -> None:
+        """Begin the display with a 1-second ticker."""
+        import asyncio
+        import time
+        self._calls = []
+        self._tool_count = 0
+        self._token_count = 0
+        self._start_time = time.monotonic()
         self._redraw()
+        self._ticker_task = asyncio.ensure_future(self._tick())
+
+    def set_tokens(self, tokens: int) -> None:
+        self._token_count = tokens
+        # no redraw — ticker handles it
+
+    def set_tool_count(self, count: int) -> None:
+        self._tool_count = count
+        # no redraw — ticker handles it
 
     def add_call(self, tool_desc: str) -> None:
-        """Add a tool call and redraw."""
         self._calls.append(tool_desc)
         self._redraw()
 
     def clear(self) -> None:
+        if self._ticker_task:
+            self._ticker_task.cancel()
+            self._ticker_task = None
         self._erase()
         self._lines_on_screen = 0
         self._calls = []
-        self._stats = ""
+        self._start_time = None
+
+    async def _tick(self) -> None:
+        import asyncio
+        try:
+            while True:
+                await asyncio.sleep(1.0)
+                self._redraw()
+        except asyncio.CancelledError:
+            pass
+
+    def _format_stats(self) -> str:
+        import time
+        if self._start_time is None:
+            return ""
+        elapsed = time.monotonic() - self._start_time
+        if elapsed < 60:
+            time_str = f"{elapsed:.0f}s"
+        else:
+            time_str = f"{elapsed / 60:.0f}m {elapsed % 60:.0f}s"
+        if self._token_count >= 1000:
+            tok_str = f"{self._token_count / 1000:.1f}k"
+        else:
+            tok_str = str(self._token_count)
+        return f"{self._tool_count} tool uses · {tok_str} tokens · {time_str}"
 
     def _erase(self) -> None:
         if self._lines_on_screen > 0:
@@ -102,9 +145,10 @@ class SubAgentDisplay:
         self._erase()
         lines = []
         # Header: ▸ research (stats)
+        stats = self._format_stats()
         header = f"{_I}\033[1;36m▸ research\033[0m"
-        if self._stats:
-            header += f"  \033[2m({self._stats})\033[0m"
+        if stats:
+            header += f"  \033[2m({stats})\033[0m"
         lines.append(header)
         # Last 2 tool calls, gray
         visible = self._calls[-self._MAX_VISIBLE:]
@@ -122,10 +166,14 @@ _subagent_display = SubAgentDisplay()
 def print_tool_log(tool: str, log: str) -> None:
     """Handle tool log events — sub-agent calls get the rolling display."""
     if tool == "research":
-        if log.startswith("stats:"):
-            _subagent_display.set_stats(log[6:])
+        if log == "Starting research sub-agent...":
+            _subagent_display.start()
         elif log == "Research complete.":
             _subagent_display.clear()
+        elif log.startswith("tokens:"):
+            _subagent_display.set_tokens(int(log[7:]))
+        elif log.startswith("tools:"):
+            _subagent_display.set_tool_count(int(log[6:]))
         else:
             _subagent_display.add_call(log)
     else:
