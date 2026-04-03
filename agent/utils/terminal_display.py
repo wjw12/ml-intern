@@ -18,6 +18,9 @@ _THEME = Theme({
 
 _console = Console(theme=_THEME, highlight=False)
 
+# Indent prefix for all agent output (aligns under the `>` prompt)
+_I = "  "
+
 
 def get_console() -> Console:
     return _console
@@ -37,26 +40,28 @@ def print_banner() -> None:
 {D}          |___/|___/       |___/                         |___/             {R}
 """
     _console.print(art, highlight=False)
-    _console.print("  [dim]🤗 /help for commands · /quit to exit[/dim]\n")
+    _console.print(f"{_I}[dim]🤗 /help for commands · /quit to exit[/dim]\n")
 
 
 # ── Init progress ──────────────────────────────────────────────────────
 
 def print_init_done() -> None:
-    _console.print("[dim]Ready.[/dim]\n")
+    _console.print(f"{_I}[dim]Ready.[/dim]\n")
 
 
 # ── Tool calls ─────────────────────────────────────────────────────────
 
 def print_tool_call(tool_name: str, args_preview: str) -> None:
-    _console.print(f"  [tool.name]▸ {tool_name}[/tool.name]  [tool.args]{args_preview}[/tool.args]")
+    _console.print(f"{_I}[tool.name]▸ {tool_name}[/tool.name]  [tool.args]{args_preview}[/tool.args]")
 
 
 def print_tool_output(output: str, success: bool, truncate: bool = True) -> None:
     if truncate:
         output = _truncate(output, max_lines=10)
     style = "tool.ok" if success else "tool.fail"
-    _console.print(f"  [{style}]{output}[/{style}]")
+    # Indent each line of tool output
+    indented = "\n".join(f"{_I}  {line}" for line in output.split("\n"))
+    _console.print(f"[{style}]{indented}[/{style}]")
 
 
 class SubAgentDisplay:
@@ -77,7 +82,6 @@ class SubAgentDisplay:
     def clear(self) -> None:
         """Erase the display and reset state."""
         if self._lines_on_screen > 0:
-            # Move up and clear each line we drew
             f = _console.file
             for _ in range(self._lines_on_screen):
                 f.write("\033[A\033[K")
@@ -95,9 +99,9 @@ class SubAgentDisplay:
         for i, desc in enumerate(visible):
             dim = i < len(visible) - 1  # older calls are dimmer
             if dim:
-                f.write(f"  \033[2m  {desc}\033[0m\n")
+                f.write(f"{_I}  \033[2m{desc}\033[0m\n")
             else:
-                f.write(f"  \033[36m▸ {desc}\033[0m\n")
+                f.write(f"{_I}\033[36m▸ {desc}\033[0m\n")
         f.flush()
         self._lines_on_screen = len(visible)
 
@@ -110,13 +114,13 @@ def print_tool_log(tool: str, log: str) -> None:
     if tool == "research":
         if log == "Starting research sub-agent...":
             _subagent_display.clear()
-            _console.print(f"  [tool.name]▸ research[/tool.name]")
+            _console.print(f"{_I}[tool.name]▸ research[/tool.name]")
         elif log == "Research complete.":
             _subagent_display.clear()
         else:
             _subagent_display.update(log)
     else:
-        _console.print(f"  [dim]{tool}: {log}[/dim]")
+        _console.print(f"{_I}[dim]{tool}: {log}[/dim]")
 
 
 # ── Messages ───────────────────────────────────────────────────────────
@@ -128,20 +132,19 @@ def print_markdown(text: str) -> None:
 
 
 def print_error(message: str) -> None:
-    _console.print(f"\n[bold red]Error:[/bold red] {message}")
+    _console.print(f"\n{_I}[bold red]Error:[/bold red] {message}")
 
 
 def print_turn_complete() -> None:
-    # Subtle separator — no noisy "turn complete" banner
-    _console.print("[dim]─[/dim]")
+    pass  # no separator — clean output
 
 
 def print_interrupted() -> None:
-    _console.print("\n[dim italic]interrupted[/dim italic]")
+    _console.print(f"\n{_I}[dim italic]interrupted[/dim italic]")
 
 
 def print_compacted(old_tokens: int, new_tokens: int) -> None:
-    _console.print(f"  [dim]context compacted: {old_tokens:,} → {new_tokens:,} tokens[/dim]")
+    _console.print(f"{_I}[dim]context compacted: {old_tokens:,} → {new_tokens:,} tokens[/dim]")
 
 
 # ── Approval ───────────────────────────────────────────────────────────
@@ -149,28 +152,28 @@ def print_compacted(old_tokens: int, new_tokens: int) -> None:
 def print_approval_header(count: int) -> None:
     label = f"Approval required — {count} item{'s' if count != 1 else ''}"
     _console.print()
-    _console.print(Panel(f"[bold yellow]{label}[/bold yellow]", border_style="yellow", expand=False))
+    _console.print(f"{_I}", Panel(f"[bold yellow]{label}[/bold yellow]", border_style="yellow", expand=False))
 
 
 def print_approval_item(index: int, total: int, tool_name: str, operation: str) -> None:
-    _console.print(f"\n  [bold]\\[{index}/{total}][/bold]  [tool.name]{tool_name}[/tool.name]  {operation}")
+    _console.print(f"\n{_I}[bold]\\[{index}/{total}][/bold]  [tool.name]{tool_name}[/tool.name]  {operation}")
 
 
 def print_yolo_approve(count: int) -> None:
-    _console.print(f"  [bold yellow]yolo →[/bold yellow] auto-approved {count} item(s)")
+    _console.print(f"{_I}[bold yellow]yolo →[/bold yellow] auto-approved {count} item(s)")
 
 
 # ── Help ───────────────────────────────────────────────────────────────
 
-HELP_TEXT = """\
-[bold]Commands[/bold]
-  [cyan]/help[/cyan]            Show this help
-  [cyan]/undo[/cyan]            Undo last turn
-  [cyan]/compact[/cyan]         Compact context window
-  [cyan]/model[/cyan] [id]      Show available models or switch
-  [cyan]/yolo[/cyan]            Toggle auto-approve mode
-  [cyan]/status[/cyan]          Current model & turn count
-  [cyan]/quit[/cyan]            Exit"""
+HELP_TEXT = f"""\
+{_I}[bold]Commands[/bold]
+{_I}  [cyan]/help[/cyan]            Show this help
+{_I}  [cyan]/undo[/cyan]            Undo last turn
+{_I}  [cyan]/compact[/cyan]         Compact context window
+{_I}  [cyan]/model[/cyan] [id]      Show available models or switch
+{_I}  [cyan]/yolo[/cyan]            Toggle auto-approve mode
+{_I}  [cyan]/status[/cyan]          Current model & turn count
+{_I}  [cyan]/quit[/cyan]            Exit"""
 
 
 def print_help() -> None:
@@ -195,14 +198,14 @@ def format_plan_display() -> str:
 
     lines = []
     for t in completed:
-        lines.append(f"  [green]✓[/green] [dim]{t['content']}[/dim]")
+        lines.append(f"{_I}[green]✓[/green] [dim]{t['content']}[/dim]")
     for t in in_progress:
-        lines.append(f"  [yellow]▸[/yellow] {t['content']}")
+        lines.append(f"{_I}[yellow]▸[/yellow] {t['content']}")
     for t in pending:
-        lines.append(f"  [dim]○ {t['content']}[/dim]")
+        lines.append(f"{_I}[dim]○ {t['content']}[/dim]")
 
     summary = f"[dim]{len(completed)}/{len(plan)} done[/dim]"
-    lines.append(f"  {summary}")
+    lines.append(f"{_I}{summary}")
     return "\n".join(lines)
 
 

@@ -203,7 +203,7 @@ class _ThinkingShimmer:
         try:
             while self._running:
                 frame = self._render_frame(text, pos)
-                self._console.file.write(f"\r{frame}")
+                self._console.file.write(f"\r  {frame}")
                 self._console.file.flush()
                 pos = (pos + speed) % (n + self._WIDTH)
                 await asyncio.sleep(1.0 / self._FPS)
