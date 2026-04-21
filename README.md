@@ -4,7 +4,9 @@
 
 # ML Intern
 
-An ML intern that autonomously researches, writes, and ships good quality ML releated code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
+An ML intern that autonomously researches, writes, and ships good-quality ML-related code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
+
+Built on the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) (the turn loop, tool execution, and auto-compaction all come from the SDK; this project provides the HF-specific tools, prompts, and session plumbing).
 
 ## Quick Start
 
@@ -26,11 +28,11 @@ ml-intern
 Create a `.env` file in the project root (or export these in your shell):
 
 ```bash
-ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
-HF_TOKEN=<your-hugging-face-token>
-GITHUB_TOKEN=<github-personal-access-token> 
+HF_TOKEN=<your-hugging-face-token>           # required — HF tool calls, job submission
+GITHUB_TOKEN=<github-personal-access-token>  # optional — higher GitHub rate limits
 ```
-If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch. To get a GITHUB_TOKEN follow the tutorial [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
+
+If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch. To get a `GITHUB_TOKEN` follow the tutorial [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
 
 ### Usage
 
@@ -49,118 +51,51 @@ ml-intern "fine-tune llama on my dataset"
 **Options:**
 
 ```bash
-ml-intern --model anthropic/claude-opus-4-6 "your prompt"
+ml-intern --model claude-opus-4-7 "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
 
+Supported models: `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`. The Claude Agent SDK routes through the bundled Claude Code CLI; HF Router models (Kimi, GLM, MiniMax) are not supported on this code path.
+
 ## Architecture
 
-### Component Overview
-
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                         User/CLI                            │
-└────────────┬─────────────────────────────────────┬──────────┘
-             │ Operations                          │ Events
-             ↓ (user_input, exec_approval,         ↑
-      submission_queue  interrupt, compact, ...)  event_queue
-             │                                          │
-             ↓                                          │
-┌────────────────────────────────────────────────────┐  │
-│            submission_loop (agent_loop.py)         │  │
-│  ┌──────────────────────────────────────────────┐  │  │
-│  │  1. Receive Operation from queue             │  │  │
-│  │  2. Route to handler (run_agent/compact/...) │  │  │
-│  └──────────────────────────────────────────────┘  │  │
-│                      ↓                             │  │
-│  ┌──────────────────────────────────────────────┐  │  │
-│  │         Handlers.run_agent()                 │  ├──┤
-│  │                                              │  │  │
-│  │  ┌────────────────────────────────────────┐  │  │  │
-│  │  │  Agentic Loop (max 300 iterations)     │  │  │  │
-│  │  │                                        │  │  │  │
-│  │  │  ┌──────────────────────────────────┐  │  │  │  │
-│  │  │  │ Session                          │  │  │  │  │
-│  │  │  │  ┌────────────────────────────┐  │  │  │  │  │
-│  │  │  │  │ ContextManager             │  │  │  │  │  │
-│  │  │  │  │ • Message history          │  │  │  │  │  │
-│  │  │  │  │   (litellm.Message[])      │  │  │  │  │  │
-│  │  │  │  │ • Auto-compaction (170k)   │  │  │  │  │  │
-│  │  │  │  │ • Session upload to HF     │  │  │  │  │  │
-│  │  │  │  └────────────────────────────┘  │  │  │  │  │
-│  │  │  │                                  │  │  │  │  │
-│  │  │  │  ┌────────────────────────────┐  │  │  │  │  │
-│  │  │  │  │ ToolRouter                 │  │  │  │  │  │
-│  │  │  │  │  ├─ HF docs & research     │  │  │  │  │  │
-│  │  │  │  │  ├─ HF repos, datasets,    │  │  │  │  │  │
-│  │  │  │  │  │  jobs, papers           │  │  │  │  │  │
-│  │  │  │  │  ├─ GitHub code search     │  │  │  │  │  │
-│  │  │  │  │  ├─ Sandbox & local tools  │  │  │  │  │  │
-│  │  │  │  │  ├─ Planning               │  │  │  │  │  │
-│  │  │  │  │  └─ MCP server tools       │  │  │  │  │  │
-│  │  │  │  └────────────────────────────┘  │  │  │  │  │
-│  │  │  └──────────────────────────────────┘  │  │  │  │
-│  │  │                                        │  │  │  │
-│  │  │  ┌──────────────────────────────────┐  │  │  │  │
-│  │  │  │ Doom Loop Detector               │  │  │  │  │
-│  │  │  │ • Detects repeated tool patterns │  │  │  │  │
-│  │  │  │ • Injects corrective prompts     │  │  │  │  │
-│  │  │  └──────────────────────────────────┘  │  │  │  │
-│  │  │                                        │  │  │  │
-│  │  │  Loop:                                 │  │  │  │
-│  │  │    1. LLM call (litellm.acompletion)   │  │  │  │
-│  │  │       ↓                                │  │  │  │
-│  │  │    2. Parse tool_calls[]               │  │  │  │
-│  │  │       ↓                                │  │  │  │
-│  │  │    3. Approval check                   │  │  │  │
-│  │  │       (jobs, sandbox, destructive ops) │  │  │  │
-│  │  │       ↓                                │  │  │  │
-│  │  │    4. Execute via ToolRouter           │  │  │  │
-│  │  │       ↓                                │  │  │  │
-│  │  │    5. Add results to ContextManager    │  │  │  │
-│  │  │       ↓                                │  │  │  │
-│  │  │    6. Repeat if tool_calls exist       │  │  │  │
-│  │  └────────────────────────────────────────┘  │  │  │
-│  └──────────────────────────────────────────────┘  │  │
-└────────────────────────────────────────────────────┴──┘
+┌──────────────────────────────────────────────────────────┐
+│                        User / CLI                        │
+└───────────┬────────────────────────────────────┬─────────┘
+            │ Operations                         │ Events
+            ↓                                    ↑
+     submission_queue                      event_queue
+            │                                    │
+            ↓                                    │
+┌──────────────────────────────────────────────┐ │
+│  submission_loop (agent_loop.py)             │ │
+│    dispatches OpType → SdkRunner             │ │
+└───────────────────┬──────────────────────────┘ │
+                    ↓                            │
+┌──────────────────────────────────────────────┐ │
+│  SdkRunner                                   │ │
+│    ClaudeSDKClient  ─┐                       │ │
+│                      │ streams messages      │ │
+│                      ▼                       │ │
+│    translator: AssistantMessage/ToolUseBlock/│─┤
+│                UserMessage(ToolResultBlock)/ │ │
+│                ResultMessage → Event         │ │
+└──────────────────────────────────────────────┘ │
+                    │                            │
+  ┌─────────────────┼─────────────────┐          │
+  ↓                 ↓                 ↓          │
+┌────────────┐ ┌──────────┐ ┌──────────────────┐ │
+│ hf-tools   │ │ HF MCP   │ │ PreToolUse hooks │─┘
+│ (in-proc   │ │ (remote) │ │  • approval gate │
+│  @tool)    │ │          │ │  • doom-loop     │
+└────────────┘ └──────────┘ └──────────────────┘
 ```
 
-### Agentic Loop Flow
+**What the Claude Agent SDK owns:** conversation history, turn loop, streaming, auto-compaction, retries, tool execution, permission prompts.
 
-```
-User Message
-     ↓
-[Add to ContextManager]
-     ↓
-     ╔═══════════════════════════════════════════╗
-     ║      Iteration Loop (max 300)             ║
-     ║                                           ║
-     ║  Get messages + tool specs                ║
-     ║         ↓                                 ║
-     ║  litellm.acompletion()                    ║
-     ║         ↓                                 ║
-     ║  Has tool_calls? ──No──> Done             ║
-     ║         │                                 ║
-     ║        Yes                                ║
-     ║         ↓                                 ║
-     ║  Add assistant msg (with tool_calls)      ║
-     ║         ↓                                 ║
-     ║  Doom loop check                          ║
-     ║         ↓                                 ║
-     ║  For each tool_call:                      ║
-     ║    • Needs approval? ──Yes──> Wait for    ║
-     ║    │                         user confirm ║
-     ║    No                                     ║
-     ║    ↓                                      ║
-     ║    • ToolRouter.execute_tool()            ║
-     ║    • Add result to ContextManager         ║
-     ║         ↓                                 ║
-     ║  Continue loop ─────────────────┐         ║
-     ║         ↑                       │         ║
-     ║         └───────────────────────┘         ║
-     ╚═══════════════════════════════════════════╝
-```
+**What ML Intern adds:** HF-specific tool suite (papers, jobs, sandbox, repo management, dataset inspection, docs search, GitHub, research sub-agent), the ML-engineering system prompt (`prompts/system_prompt_v3.yaml`), HF OAuth + session management for the web UI, trajectory logging to an HF dataset, and approval/doom-loop hooks.
 
 ## Events
 

@@ -406,21 +406,6 @@ _HANDLERS = {
 }
 
 
-def get_local_tools():
-    """Return local ToolSpecs for bash/read/write/edit (no sandbox_create)."""
-    from agent.core.tools import ToolSpec
-
-    tools = []
-    for name, spec in _LOCAL_TOOL_SPECS.items():
-        handler = _HANDLERS.get(name)
-        if handler is None:
-            continue
-        tools.append(
-            ToolSpec(
-                name=name,
-                description=spec["description"],
-                parameters=spec["parameters"],
-                handler=handler,
-            )
-        )
-    return tools
+def get_tool_defs() -> list[tuple[str, dict, "Callable"]]:
+    """Return (name, spec_dict, handler) triples for every local tool."""
+    return [(name, _LOCAL_TOOL_SPECS[name], _HANDLERS[name]) for name in _HANDLERS]

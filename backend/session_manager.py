@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from agent.config import load_config
-from agent.core.agent_loop import process_submission
+from agent.core.agent_loop import _resolve_hf_username, process_submission
+from agent.core.sdk_runner import SdkRunner
 from agent.core.session import Event, OpType, Session
-from agent.core.tools import ToolRouter
 
 # Get project root (parent of backend directory)
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -82,7 +82,7 @@ class AgentSession:
 
     session_id: str
     session: Session
-    tool_router: ToolRouter
+    runner: SdkRunner
     submission_queue: asyncio.Queue
     user_id: str = "dev"  # Owner of this session
     hf_token: str | None = None  # User's HF OAuth token for tool execution
@@ -129,16 +129,8 @@ class SessionManager:
     async def create_session(self, user_id: str = "dev", hf_token: str | None = None) -> str:
         """Create a new agent session and return its ID.
 
-        Session() and ToolRouter() constructors contain blocking I/O
-        (e.g. HfApi().whoami(), litellm.get_max_tokens()) so they are
-        executed in a thread pool to avoid freezing the async event loop.
-
-        Args:
-            user_id: The ID of the user who owns this session.
-
-        Raises:
-            SessionCapacityError: If the server or user has reached the
-                maximum number of concurrent sessions.
+        The SDK MCP server is built lazily inside `SdkRunner.start()` (called
+        from `_run_session`), so this method is cheap and non-blocking.
         """
         # ── Capacity checks ──────────────────────────────────────────
         async with self._lock:
@@ -164,29 +156,13 @@ class SessionManager:
         submission_queue: asyncio.Queue = asyncio.Queue()
         event_queue: asyncio.Queue = asyncio.Queue()
 
-        # Run blocking constructors in a thread to keep the event loop responsive.
-        # Without this, Session.__init__ → ContextManager → litellm.get_max_tokens()
-        # blocks all HTTP/SSE handling.
-        import time as _time
+        session = Session(event_queue, config=self.config, hf_token=hf_token)
+        runner = SdkRunner(session, local_mode=False)
 
-        def _create_session_sync():
-            t0 = _time.monotonic()
-            tool_router = ToolRouter(self.config.mcpServers, hf_token=hf_token)
-            session = Session(
-                event_queue, config=self.config, tool_router=tool_router,
-                hf_token=hf_token,
-            )
-            t1 = _time.monotonic()
-            logger.info(f"Session initialized in {t1 - t0:.2f}s")
-            return tool_router, session
-
-        tool_router, session = await asyncio.to_thread(_create_session_sync)
-
-        # Create wrapper
         agent_session = AgentSession(
             session_id=session_id,
             session=session,
-            tool_router=tool_router,
+            runner=runner,
             submission_queue=submission_queue,
             user_id=user_id,
             hf_token=hf_token,
@@ -195,9 +171,8 @@ class SessionManager:
         async with self._lock:
             self.sessions[session_id] = agent_session
 
-        # Start the agent loop task
         task = asyncio.create_task(
-            self._run_session(session_id, submission_queue, event_queue, tool_router)
+            self._run_session(session_id, submission_queue, event_queue, runner)
         )
         agent_session.task = task
 
@@ -220,7 +195,7 @@ class SessionManager:
         session_id: str,
         submission_queue: asyncio.Queue,
         event_queue: asyncio.Queue,
-        tool_router: ToolRouter,
+        runner: SdkRunner,
     ) -> None:
         """Run the agent loop for a session and broadcast events via EventBroadcaster."""
         agent_session = self.sessions.get(session_id)
@@ -235,37 +210,44 @@ class SessionManager:
         agent_session.broadcaster = broadcaster
         broadcast_task = asyncio.create_task(broadcaster.run())
 
+        # Shared mutable slot so process_submission can track the background
+        # run_turn task — keeps the loop free for EXEC_APPROVAL / INTERRUPT.
+        run_task: list[asyncio.Task | None] = [None]
+
         try:
-            async with tool_router:
-                # Send ready event
-                await session.send_event(
-                    Event(event_type="ready", data={"message": "Agent initialized"})
+            hf_username = await _resolve_hf_username(agent_session.hf_token)
+            tool_count = await runner.start(hf_username=hf_username)
+            await session.send_event(
+                Event(
+                    event_type="ready",
+                    data={"message": "Agent initialized", "tool_count": tool_count},
                 )
+            )
 
-                while session.is_running:
+            while session.is_running:
+                try:
+                    submission = await asyncio.wait_for(
+                        submission_queue.get(), timeout=1.0
+                    )
+                    agent_session.is_processing = True
                     try:
-                        # Wait for submission with timeout to allow checking is_running
-                        submission = await asyncio.wait_for(
-                            submission_queue.get(), timeout=1.0
+                        should_continue = await process_submission(
+                            session, runner, submission, run_task
                         )
-                        agent_session.is_processing = True
-                        try:
-                            should_continue = await process_submission(session, submission)
-                        finally:
-                            agent_session.is_processing = False
-                        if not should_continue:
-                            break
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        logger.info(f"Session {session_id} cancelled")
+                    finally:
+                        agent_session.is_processing = False
+                    if not should_continue:
                         break
-                    except Exception as e:
-                        logger.error(f"Error in session {session_id}: {e}")
-                        await session.send_event(
-                            Event(event_type="error", data={"error": str(e)})
-                        )
-
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    logger.info(f"Session {session_id} cancelled")
+                    break
+                except Exception as e:
+                    logger.error(f"Error in session {session_id}: {e}")
+                    await session.send_event(
+                        Event(event_type="error", data={"error": str(e)})
+                    )
         finally:
             broadcast_task.cancel()
             try:
@@ -273,6 +255,7 @@ class SessionManager:
             except asyncio.CancelledError:
                 pass
 
+            await runner.close()
             await self._cleanup_sandbox(session)
 
             async with self._lock:
@@ -317,17 +300,33 @@ class SessionManager:
         return True
 
     async def undo(self, session_id: str) -> bool:
-        """Undo last turn in a session."""
-        operation = Operation(op_type=OpType.UNDO)
-        return await self.submit(session_id, operation)
+        """Undo last turn — unsupported under the Claude Agent SDK.
 
-    async def truncate(self, session_id: str, user_message_index: int) -> bool:
-        """Truncate conversation to before a specific user message (direct, no queue)."""
+        The bundled CLI owns the transcript and doesn't expose a partial
+        rewind. We emit an `undo_complete` event so the existing UI path
+        clears its spinner, but the conversation is unchanged.
+        """
         async with self._lock:
             agent_session = self.sessions.get(session_id)
         if not agent_session or not agent_session.is_active:
             return False
-        return agent_session.session.context_manager.truncate_to_user_message(user_message_index)
+        await agent_session.session.send_event(
+            Event(event_type="undo_complete", data={"supported": False})
+        )
+        return True
+
+    async def truncate(self, session_id: str, user_message_index: int) -> bool:
+        """Truncate conversation to before a specific user message.
+
+        No-op under the Claude Agent SDK — the CLI owns the transcript, and
+        partial rewinds are not exposed. Kept for API compatibility; always
+        returns False so the frontend can render an explanatory message.
+        """
+        logger.info(
+            "truncate() is a no-op under the Claude Agent SDK — "
+            "partial rewinds are not supported."
+        )
+        return False
 
     async def compact(self, session_id: str) -> bool:
         """Compact context in a session."""
@@ -421,7 +420,7 @@ class SessionManager:
             "created_at": agent_session.created_at.isoformat(),
             "is_active": agent_session.is_active,
             "is_processing": agent_session.is_processing,
-            "message_count": len(agent_session.session.context_manager.items),
+            "message_count": len(agent_session.session.logged_events),
             "user_id": agent_session.user_id,
             "pending_approval": pending_approval,
         }

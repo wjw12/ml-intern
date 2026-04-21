@@ -18,7 +18,6 @@ from fastapi import (
     Request,
 )
 from fastapi.responses import StreamingResponse
-from litellm import acompletion
 from models import (
     ApprovalRequest,
     HealthResponse,
@@ -30,34 +29,28 @@ from models import (
 )
 from session_manager import MAX_SESSIONS, SessionCapacityError, session_manager
 
-from agent.core.agent_loop import _resolve_hf_router_params
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["agent"])
 
+# Claude Agent SDK routes through the bundled Claude Code CLI, so only
+# Anthropic's Claude models are available.
 AVAILABLE_MODELS = [
     {
-        "id": "anthropic/claude-opus-4-6",
-        "label": "Claude Opus 4.6",
+        "id": "claude-opus-4-7",
+        "label": "Claude Opus 4.7",
         "provider": "anthropic",
         "recommended": True,
     },
     {
-        "id": "huggingface/fireworks-ai/MiniMaxAI/MiniMax-M2.5",
-        "label": "MiniMax M2.5",
-        "provider": "huggingface",
-        "recommended": True,
+        "id": "claude-sonnet-4-6",
+        "label": "Claude Sonnet 4.6",
+        "provider": "anthropic",
     },
     {
-        "id": "huggingface/novita/moonshotai/kimi-k2.5",
-        "label": "Kimi K2.5",
-        "provider": "huggingface",
-    },
-    {
-        "id": "huggingface/novita/zai-org/glm-5",
-        "label": "GLM 5",
-        "provider": "huggingface",
+        "id": "claude-haiku-4-5-20251001",
+        "label": "Claude Haiku 4.5",
+        "provider": "anthropic",
     },
 ]
 
@@ -81,25 +74,36 @@ async def health_check() -> HealthResponse:
     )
 
 
+_HEALTH_MODEL = "claude-haiku-4-5-20251001"
+
+
 @router.get("/health/llm", response_model=LLMHealthResponse)
 async def llm_health_check() -> LLMHealthResponse:
-    """Check if the LLM provider is reachable and the API key is valid.
+    """Check if the Claude Agent SDK is reachable.
 
-    Makes a minimal 1-token completion call.  Catches common errors:
-    - 401 → invalid API key
+    Fires a minimal `query()` with max_turns=1 and no tools.
+    Catches common errors:
+    - 401 → invalid credentials / CLI not authenticated
     - 402/insufficient_quota → out of credits
     - 429 → rate limited
     - timeout / network → provider unreachable
     """
     model = session_manager.config.model_name
     try:
-        llm_params = _resolve_hf_router_params(model)
-        await acompletion(
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=1,
-            timeout=10,
-            **llm_params,
+        from claude_agent_sdk import (
+            ClaudeAgentOptions,
+            ResultMessage,
+            query,
         )
+
+        options = ClaudeAgentOptions(
+            model=_HEALTH_MODEL,
+            max_turns=1,
+            permission_mode="default",
+        )
+        async for msg in query(prompt="hi", options=options):
+            if isinstance(msg, ResultMessage):
+                break
         return LLMHealthResponse(status="ok", model=model)
     except Exception as e:
         err_str = str(e).lower()
@@ -162,28 +166,35 @@ async def generate_title(
     request: SubmitRequest, user: dict = Depends(get_current_user)
 ) -> dict:
     """Generate a short title for a chat session based on the first user message."""
-    model = session_manager.config.model_name
-    llm_params = _resolve_hf_router_params(model)
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ClaudeAgentOptions,
+        ResultMessage,
+        TextBlock,
+        query,
+    )
+
     try:
-        response = await acompletion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Generate a very short title (max 6 words) for a chat conversation "
-                        "that starts with the following user message. "
-                        "Reply with ONLY the title, no quotes, no punctuation at the end."
-                    ),
-                },
-                {"role": "user", "content": request.text[:500]},
-            ],
-            max_tokens=20,
-            temperature=0.3,
-            timeout=8,
-            **llm_params,
+        options = ClaudeAgentOptions(
+            model=_HEALTH_MODEL,
+            system_prompt=(
+                "Generate a very short title (max 6 words) for a chat "
+                "conversation that starts with the following user message. "
+                "Reply with ONLY the title, no quotes, no punctuation at the end."
+            ),
+            max_turns=1,
+            permission_mode="default",
         )
-        title = response.choices[0].message.content.strip().strip('"').strip("'")
-        # Safety: cap at 50 chars
+        parts: list[str] = []
+        async for msg in query(prompt=request.text[:500], options=options):
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock) and block.text:
+                        parts.append(block.text)
+            elif isinstance(msg, ResultMessage):
+                break
+        raw = "".join(parts)
+        title = raw.strip().strip('"').strip("'")
         if len(title) > 50:
             title = title[:50].rstrip() + "…"
         return {"title": title}
@@ -426,7 +437,10 @@ async def get_session_messages(
     agent_session = session_manager.sessions.get(session_id)
     if not agent_session or not agent_session.is_active:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
-    return [msg.model_dump() for msg in agent_session.session.context_manager.items]
+    # Under the Claude Agent SDK the message history lives inside the CLI
+    # and isn't directly addressable, so we surface the event trajectory
+    # (what the UI has always rendered from anyway).
+    return list(agent_session.session.logged_events)
 
 
 @router.post("/undo/{session_id}")
