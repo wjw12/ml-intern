@@ -30,6 +30,7 @@ class OpType(Enum):
     EXEC_APPROVAL = "exec_approval"
     INTERRUPT = "interrupt"
     COMPACT = "compact"
+    CONTEXT_USAGE = "context_usage"
     SHUTDOWN = "shutdown"
 
 

@@ -290,8 +290,11 @@ def print_interrupted() -> None:
     _console.print(f"\n{_I}[dim italic]interrupted[/dim italic]")
 
 
-def print_compacted(old_tokens: int, new_tokens: int) -> None:
-    _console.print(f"{_I}[dim]context compacted: {old_tokens:,} → {new_tokens:,} tokens[/dim]")
+def print_compacted(new_tokens: int, max_tokens: int) -> None:
+    if new_tokens:
+        _console.print(f"{_I}[dim]context compacted → {new_tokens:,} / {max_tokens:,} tokens[/dim]")
+    else:
+        _console.print(f"{_I}[dim]context compacted[/dim]")
 
 
 # ── Approval ───────────────────────────────────────────────────────────
@@ -319,7 +322,7 @@ HELP_TEXT = f"""\
 {_I}  [cyan]/compact[/cyan]         Compact context window
 {_I}  [cyan]/model[/cyan] [id]      Show available models or switch
 {_I}  [cyan]/yolo[/cyan]            Toggle auto-approve mode
-{_I}  [cyan]/status[/cyan]          Current model & turn count
+{_I}  [cyan]/status[/cyan]          Model, turns & context usage
 {_I}  [cyan]/quit[/cyan]            Exit"""
 
 

@@ -107,16 +107,21 @@ async def process_submission(
         return True
 
     if op.op_type == OpType.COMPACT:
-        # Compaction is owned by the Claude Code CLI; nothing to do here.
-        # The user sees a `compacted` event when the SDK auto-compacts.
+        # Send /compact as a query to the underlying Claude Code CLI.
+        if run_task[0] is not None and not run_task[0].done():
+            await run_task[0]
+        run_task[0] = asyncio.create_task(_run_user_input(runner, session, "/compact"))
+        return True
+
+    if op.op_type == OpType.CONTEXT_USAGE:
+        usage = await runner.get_context_usage()
+        event_data = dict(usage) if usage else {}
+        # Pass through source marker if present
+        source = (op.data or {}).get("source")
+        if source:
+            event_data["source"] = source
         await session.send_event(
-            Event(
-                event_type="tool_log",
-                data={
-                    "tool": "system",
-                    "log": "Manual compaction is handled by the Claude Agent SDK; this session auto-compacts as needed.",
-                },
-            )
+            Event(event_type="context_usage", data=event_data)
         )
         return True
 

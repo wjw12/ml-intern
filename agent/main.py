@@ -234,6 +234,7 @@ async def event_listener(
     ready_event: asyncio.Event,
     prompt_session: PromptSession,
     config=None,
+    context_info: dict | None = None,
 ) -> None:
     """Background task that listens for events and displays them"""
     submission_id = [1000]
@@ -241,6 +242,8 @@ async def event_listener(
     console = _create_rich_console()
     shimmer = _ThinkingShimmer(console)
     stream_buf = _StreamBuffer(console)
+    # Track whether we're waiting for a context_usage response after turn_complete
+    _awaiting_context_after_turn = [False]
 
     while True:
         try:
@@ -285,7 +288,13 @@ async def event_listener(
                 stream_buf.discard()
                 print_turn_complete()
                 print_plan()
-                turn_complete_event.set()
+                # Request context usage to display below the next prompt
+                submission_id[0] += 1
+                _awaiting_context_after_turn[0] = True
+                await submission_queue.put(Submission(
+                    id=f"ctx_{submission_id[0]}",
+                    operation=Operation(op_type=OpType.CONTEXT_USAGE),
+                ))
             elif event.event_type == "interrupted":
                 shimmer.stop()
                 stream_buf.discard()
@@ -314,9 +323,32 @@ async def event_listener(
             elif event.event_type == "processing":
                 shimmer.start()
             elif event.event_type == "compacted":
-                old_tokens = event.data.get("old_tokens", 0) if event.data else 0
                 new_tokens = event.data.get("new_tokens", 0) if event.data else 0
-                print_compacted(old_tokens, new_tokens)
+                max_tokens = event.data.get("max_tokens", 0) if event.data else 0
+                print_compacted(new_tokens, max_tokens)
+            elif event.event_type == "context_usage":
+                data = event.data or {}
+                total = data.get("totalTokens", 0)
+                max_tok = data.get("maxTokens", 0)
+                pct = data.get("percentage", 0)
+                source = data.get("source", "")
+                # Update shared context info for prompt display
+                if context_info is not None and total:
+                    context_info["totalTokens"] = total
+                    context_info["maxTokens"] = max_tok
+                    context_info["percentage"] = pct
+                if source == "status":
+                    # Explicit /status request — print details
+                    if total:
+                        console.print(f"  [dim]Context: {total:,} / {max_tok:,} tokens ({pct:.1f}%)[/dim]")
+                    else:
+                        console.print("  [dim]Context: unavailable[/dim]")
+                elif _awaiting_context_after_turn[0]:
+                    # Auto-request after turn — show compact line
+                    if total:
+                        console.print(f"  [dim]{total:,} / {max_tok:,} tokens ({pct:.1f}%)[/dim]")
+                _awaiting_context_after_turn[0] = False
+                turn_complete_event.set()
             elif event.event_type == "approval_required":
                 # Handle batch approval format
                 tools_data = event.data.get("tools", []) if event.data else []
@@ -696,11 +728,12 @@ def _handle_slash_command(
         print(f"Model: {config.model_name}")
         if session:
             print(f"Turns: {session.turn_count}")
-            print(
-                "Context: owned by the Claude Agent SDK "
-                "(auto-compacts as needed)."
-            )
-        return None
+        # Request context usage — the event listener will print it
+        submission_id[0] += 1
+        return Submission(
+            id=f"sub_{submission_id[0]}",
+            operation=Operation(op_type=OpType.CONTEXT_USAGE, data={"source": "status"}),
+        )
 
     print(f"Unknown command: {command}. Type /help for available commands.")
     return None
@@ -759,6 +792,7 @@ async def main():
     )
 
     # Start event listener in background
+    context_info = {}
     listener_task = asyncio.create_task(
         event_listener(
             event_queue,
@@ -767,6 +801,7 @@ async def main():
             ready_event,
             prompt_session,
             config,
+            context_info,
         )
     )
 
@@ -991,9 +1026,9 @@ async def headless_main(
                 ),
             ))
         elif event.event_type == "compacted":
-            old_tokens = event.data.get("old_tokens", 0) if event.data else 0
             new_tokens = event.data.get("new_tokens", 0) if event.data else 0
-            print_compacted(old_tokens, new_tokens)
+            max_tokens = event.data.get("max_tokens", 0) if event.data else 0
+            print_compacted(new_tokens, max_tokens)
         elif event.event_type == "error":
             shimmer.stop()
             stream_buf.discard()

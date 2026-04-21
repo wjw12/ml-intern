@@ -88,6 +88,16 @@ class SdkRunner:
         except Exception as e:  # noqa: BLE001
             logger.warning("interrupt() failed: %s", e)
 
+    async def get_context_usage(self) -> dict[str, Any] | None:
+        """Query the SDK for current context window usage."""
+        if self._client is None:
+            return None
+        try:
+            return await self._client.get_context_usage()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("get_context_usage() failed: %s", e)
+            return None
+
     async def run_turn(self, text: str) -> None:
         """Send user text, pump messages out as events, return on turn end."""
         if self._client is None:
@@ -193,8 +203,14 @@ class SdkRunner:
         # Surface compaction events if the SDK reports them.
         subtype = getattr(msg, "subtype", "") or ""
         if "compact" in subtype.lower():
+            data = dict(getattr(msg, "data", {}) or {})
+            # Fetch real post-compaction token count
+            usage = await self.get_context_usage()
+            if usage:
+                data["new_tokens"] = usage.get("totalTokens", 0)
+                data["max_tokens"] = usage.get("maxTokens", 0)
             await self._session.send_event(
-                Event(event_type="compacted", data=dict(getattr(msg, "data", {}) or {}))
+                Event(event_type="compacted", data=data)
             )
 
 
