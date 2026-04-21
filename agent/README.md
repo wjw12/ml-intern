@@ -1,21 +1,47 @@
 # Agent
 
-Async agent loop with LiteLLM.
+The agent runs on the **[Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python)**. The SDK owns the LLM turn mechanics (streaming, tool execution, auto-compaction); this package provides the ML-intern specific tools, prompts, and session plumbing.
 
-## Architecture
+## Layout
 
-**Queue-based async system:**
-- Submissions in (user input) → Agent Loop → Events output for possible UI updates
-- Session maintains state (context + tools) for possible future Context Engineering
-- Handlers operations like (USER_INPUT, INTERRUPT, COMPACT, UNDO, SHUTDOWN) for possible UI control
+| Module | Purpose |
+|---|---|
+| `core/session.py` | Per-session state: event queue, cancellation flag, sandbox handle, trajectory logging, HF token, config. No conversation history — the SDK owns that. |
+| `core/sdk_runner.py` | Thin adapter that owns a `ClaudeSDKClient`, pumps `receive_response()` messages out as UI events (`assistant_message`, `tool_call`, `tool_output`, `turn_complete`, `compacted`). |
+| `core/sdk_tools.py` | Wraps every ML-intern tool handler as `@tool` functions inside an in-process `create_sdk_mcp_server("hf-tools", ...)`. Each session builds its own server so handlers can close over `Session` (for HF token + sandbox access). |
+| `core/sdk_hooks.py` | `PreToolUse` hook: approval gating (replaces the old `_needs_approval`) and doom-loop detection. `ApprovalManager` bridges the hook to the existing `EXEC_APPROVAL` op via an `asyncio.Future`. |
+| `core/sdk_options.py` | Builds the `ClaudeAgentOptions` for a session: system prompt, cwd, MCP servers, allow/disallow lists, hooks, permission mode, `max_turns`. |
+| `core/agent_loop.py` | `submission_loop` + `process_submission` — dispatches `USER_INPUT`/`EXEC_APPROVAL`/`INTERRUPT`/`COMPACT`/`SHUTDOWN` ops onto the runner. |
+| `tools/*.py` | The actual ML-intern tool implementations (papers, jobs, sandbox, repo mgmt, docs search, GitHub, dataset inspection, plan, research sub-agent). |
+| `prompts/system_prompt_v3.yaml` | Active system prompt. Rendered with Jinja2 and passed to `ClaudeAgentOptions(system_prompt=...)`. |
 
-## Components
+## How a user turn flows
 
-| Component | Purpose | Long Term Goal |
-|-----------|---------|----------------|
-| **`agent_loop.py`** | Core agentic loop: processes user input, calls LLM via LiteLLM, executes tool calls iteratively until completion, emits events | Support parallel tool execution, streaming responses, and advanced reasoning patterns |
-| **`session.py`** | Maintains session state and interaction with potential UI (context, config, event queue), handles interrupts, assigns unique session IDs for tracing | Enable plugging in different UIs (CLI, web, API, programmatic etc.) |
-| **`tools.py`** | `ToolRouter` manages potential built-in tools (e.g. bash, read_file, write_file which are dummy implementations rn) + MCP tools, converts specs to OpenAI format | Be the place for tools that can be used by the agent. All crazy tool design happens here. |
-| **`context_manager/`** | Manages conversation history, very rudimentary context engineering support | Implement intelligent context engineering to keep the agent on track |
-| **`config.py`** | Loads JSON config for the agent | Support different configs etc. |
-| **`main.py`** | Interactive CLI with async queue architecture (submission→agent, agent→events) (simple way to interact with the agent now)| Serve as reference implementation for other UIs (web, API, programmatic) |
+```
+UI submits OpType.USER_INPUT
+         │
+         ▼
+submission_loop → process_submission
+         │
+         ▼
+SdkRunner.run_turn(text)
+         │
+         ├─ ClaudeSDKClient.query(text)
+         ▼
+async for msg in client.receive_response():
+    AssistantMessage(TextBlock)   → event: assistant_message
+    AssistantMessage(ToolUseBlock)→ event: tool_call
+    UserMessage(ToolResultBlock)  → event: tool_output
+    ResultMessage                 → event: turn_complete
+```
+
+Approval flow:
+1. Claude issues a tool call.
+2. `PreToolUse` hook runs `_needs_approval` → if yes, returns `permissionDecision: "ask"`.
+3. The hook suspends on a `Future` keyed by `tool_use_id`; emits `approval_required`.
+4. UI returns `EXEC_APPROVAL` with a decision; `ApprovalManager.resolve_all` wakes the hook.
+5. Hook returns `allow`/`deny` and Claude proceeds.
+
+Doom-loop detection: the same `PreToolUse` hook tracks recent tool signatures (name + args hash) per session; if it sees the same call three times in a row or a repeating `[A,B,A,B]` pattern, it returns `additionalContext` that tells Claude to change strategy.
+
+Compaction: handled by the Claude Code CLI. `PreCompact` is available if you need custom summarization instructions — register it via `ClaudeAgentOptions(hooks={"PreCompact": [...]})`.

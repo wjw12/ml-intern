@@ -16,13 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-import litellm
 from prompt_toolkit import PromptSession
 
 from agent.config import load_config
 from agent.core.agent_loop import submission_loop
 from agent.core.session import OpType
-from agent.core.tools import ToolRouter
 from agent.utils.reliability_checks import check_training_script_save_pattern
 from agent.utils.terminal_display import (
     get_console,
@@ -43,14 +41,12 @@ from agent.utils.terminal_display import (
     print_yolo_approve,
 )
 
-litellm.drop_params = True
-
 # ── Available models (mirrors backend/routes/agent.py) ──────────────────
+# ML Intern now runs on the Claude Agent SDK, so we only ship Claude models.
 AVAILABLE_MODELS = [
-    {"id": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6"},
-    {"id": "huggingface/fireworks-ai/MiniMaxAI/MiniMax-M2.5", "label": "MiniMax M2.5"},
-    {"id": "huggingface/novita/moonshotai/kimi-k2.5", "label": "Kimi K2.5"},
-    {"id": "huggingface/novita/zai-org/glm-5", "label": "GLM 5"},
+    {"id": "claude-opus-4-7", "label": "Claude Opus 4.7"},
+    {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6"},
+    {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5"},
 ]
 VALID_MODEL_IDS = {m["id"] for m in AVAILABLE_MODELS}
 
@@ -653,11 +649,12 @@ def _handle_slash_command(
         return None
 
     if command == "/undo":
-        submission_id[0] += 1
-        return Submission(
-            id=f"sub_{submission_id[0]}",
-            operation=Operation(op_type=OpType.UNDO),
+        print(
+            "/undo is not supported under the Claude Agent SDK — the "
+            "bundled Claude Code CLI owns the transcript and doesn't expose "
+            "a partial rewind."
         )
+        return None
 
     if command == "/compact":
         submission_id[0] += 1
@@ -699,7 +696,10 @@ def _handle_slash_command(
         print(f"Model: {config.model_name}")
         if session:
             print(f"Turns: {session.turn_count}")
-            print(f"Context items: {len(session.context_manager.items)}")
+            print(
+                "Context: owned by the Claude Agent SDK "
+                "(auto-compacts as needed)."
+            )
         return None
 
     print(f"Unknown command: {command}. Type /help for available commands.")
@@ -743,9 +743,6 @@ async def main():
     config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
     config = load_config(config_path)
 
-    # Create tool router with local mode
-    tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
-
     # Session holder for interrupt/model/status access
     session_holder = [None]
 
@@ -754,7 +751,6 @@ async def main():
             submission_queue,
             event_queue,
             config=config,
-            tool_router=tool_router,
             session_holder=session_holder,
             hf_token=hf_token,
             local_mode=True,
@@ -903,7 +899,6 @@ async def headless_main(
     submission_queue: asyncio.Queue = asyncio.Queue()
     event_queue: asyncio.Queue = asyncio.Queue()
 
-    tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
     session_holder: list = [None]
 
     agent_task = asyncio.create_task(
@@ -911,7 +906,6 @@ async def headless_main(
             submission_queue,
             event_queue,
             config=config,
-            tool_router=tool_router,
             session_holder=session_holder,
             hf_token=hf_token,
             local_mode=True,
@@ -1032,8 +1026,6 @@ def cli():
     import warnings
     # Suppress aiohttp "Unclosed client session" noise during event loop teardown
     _logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
-    # Suppress litellm pydantic deprecation warnings
-    warnings.filterwarnings("ignore", category=DeprecationWarning, module="litellm")
     # Suppress whoosh invalid escape sequence warnings (third-party, unfixed upstream)
     warnings.filterwarnings("ignore", category=SyntaxWarning, module="whoosh")
 

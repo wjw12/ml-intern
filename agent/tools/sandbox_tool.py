@@ -261,32 +261,6 @@ def _make_tool_handler(sandbox_tool_name: str):
     return handler
 
 
-def get_sandbox_tools():
-    """Return all 5 sandbox ToolSpecs (sandbox_create + 4 operation tools)."""
-    from agent.core.tools import ToolSpec
-
-    tools = []
-
-    # sandbox_create (explicit creation, requires approval)
-    tools.append(
-        ToolSpec(
-            name=SANDBOX_CREATE_TOOL_SPEC["name"],
-            description=SANDBOX_CREATE_TOOL_SPEC["description"],
-            parameters=SANDBOX_CREATE_TOOL_SPEC["parameters"],
-            handler=sandbox_create_handler,
-        )
-    )
-
-    # Operation tools (auto-execute, no approval needed)
-    for name in Sandbox.TOOLS.keys():
-        spec = Sandbox.TOOLS[name]
-        tools.append(
-            ToolSpec(
-                name=name,
-                description=spec["description"],
-                parameters=spec["parameters"],
-                handler=_make_tool_handler(name),
-            )
-        )
-
-    return tools
+# (The earlier `get_sandbox_tools()` factory that returned ToolSpec objects is
+# no longer needed — sdk_tools.py consumes SANDBOX_CREATE_TOOL_SPEC,
+# sandbox_create_handler, Sandbox.TOOLS, and _make_tool_handler directly.)

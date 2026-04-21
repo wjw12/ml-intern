@@ -1,31 +1,27 @@
-"""
-Research subagent tool — spawns a cheap LLM call with a focused
-research task and returns a summary. The subagent gets its own
-independent context (not the main conversation), so research
-work doesn't pollute the main agent's context window.
+"""Research subagent tool.
 
-Inspired by claude-code's code-explorer agent pattern.
+Spawns an independent `claude_agent_sdk.query()` with a read-only
+subset of the main tool set, so research work doesn't pollute the
+main agent's context window.
 """
 
-import json
 import logging
-import os
 from typing import Any
 
-from litellm import Message, acompletion
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ResultMessage,
+    TextBlock,
+    query,
+)
 
-from agent.core.doom_loop import check_for_doom_loop
 from agent.core.session import Event
 
 logger = logging.getLogger(__name__)
 
-# Context budget for the research subagent (tokens).
-# When usage exceeds WARN threshold, the subagent is told to wrap up.
-# At MAX, the loop is force-stopped and whatever content exists is returned.
-_RESEARCH_CONTEXT_WARN = 170_000  # 85% of 200k
-_RESEARCH_CONTEXT_MAX = 190_000
-
-# Tools the research agent can use (read-only subset)
+# Tools the research agent can use (read-only subset). These are the
+# logical names; at call time they're referenced as `mcp__hf-tools__<name>`.
 RESEARCH_TOOL_NAMES = {
     "read",
     "bash",
@@ -212,69 +208,26 @@ RESEARCH_TOOL_SPEC = {
     },
 }
 
-
-def _resolve_llm_params(model_name: str) -> dict:
-    """Build LiteLLM kwargs, reusing the HF router logic from agent_loop."""
-    if not model_name.startswith("huggingface/"):
-        return {"model": model_name}
-
-    parts = model_name.split("/", 2)  # ["huggingface", "<provider>", "<org>/<model>"]
-    if len(parts) < 3:
-        return {"model": model_name}
-
-    provider = parts[1]
-    model_id = parts[2]
-    return {
-        "model": f"openai/{model_id}",
-        "api_base": f"https://router.huggingface.co/{provider}/v3/openai",
-        "api_key": os.environ.get("INFERENCE_TOKEN", ""),
-    }
-
-
-def _get_research_model(main_model: str) -> str:
-    """Pick a cheaper model for research based on the main model."""
-    if "anthropic/" in main_model:
-        return "anthropic/claude-sonnet-4-6"
-    # For non-Anthropic models (HF router etc.), use the same model
-    return main_model
+_RESEARCH_MAX_TURNS = 60
 
 
 async def research_handler(
     arguments: dict[str, Any], session=None, **_kw
 ) -> tuple[str, bool]:
-    """Execute a research sub-agent with its own context."""
+    """Execute a research sub-agent via `claude_agent_sdk.query()`.
+
+    The sub-agent runs in its own SDK session with a restricted
+    read-only tool allowlist, so its turn-by-turn context never touches
+    the main conversation.
+    """
     task = arguments.get("task", "")
     context = arguments.get("context", "")
     if not task:
         return "No research task provided.", False
-
     if not session:
         return "No session available for research agent.", False
 
-    # Build the sub-agent's messages (independent context)
-    messages: list[Message] = [
-        Message(role="system", content=RESEARCH_SYSTEM_PROMPT),
-    ]
-
-    user_content = f"Research task: {task}"
-    if context:
-        user_content = f"Context: {context}\n\n{user_content}"
-    messages.append(Message(role="user", content=user_content))
-
-    # Use a cheaper/faster model for research
-    main_model = session.config.model_name
-    research_model = _get_research_model(main_model)
-    llm_params = _resolve_llm_params(research_model)
-
-    # Get read-only tool specs from the session's tool router
-    tool_specs = [
-        spec
-        for spec in session.tool_router.get_tool_specs_for_llm()
-        if spec["function"]["name"] in RESEARCH_TOOL_NAMES
-    ]
-
     async def _log(text: str) -> None:
-        """Send a progress event to the UI so it doesn't look frozen."""
         try:
             await session.send_event(
                 Event(event_type="tool_log", data={"tool": "research", "log": text})
@@ -282,168 +235,54 @@ async def research_handler(
         except Exception:
             pass
 
-    _tool_uses = 0
-    _total_tokens = 0
-    _warned_context = False
+    # Delegate tool execution to the same in-process SDK MCP server the
+    # main agent uses — so the sub-agent shares the session's HF token
+    # and sandbox handle via closure.
+    from agent.core.sdk_tools import build_hf_tools_server
+
+    hf_server, all_tool_names = await build_hf_tools_server(
+        session, local_mode=getattr(session, "local_mode", False)
+    )
+    allowed_tools = [
+        f"mcp__hf-tools__{n}" for n in all_tool_names if n in RESEARCH_TOOL_NAMES
+    ]
+
+    user_content = f"Research task: {task}"
+    if context:
+        user_content = f"Context: {context}\n\n{user_content}"
+
+    options = ClaudeAgentOptions(
+        model=session.config.model_name,
+        system_prompt=RESEARCH_SYSTEM_PROMPT,
+        mcp_servers={"hf-tools": hf_server},
+        allowed_tools=allowed_tools,
+        disallowed_tools=["Bash", "Read", "Write", "Edit"],
+        max_turns=_RESEARCH_MAX_TURNS,
+        permission_mode="default",
+    )
 
     await _log("Starting research sub-agent...")
 
-    # Run the research loop — context budget is the real limiter
-    max_iterations = 60
-    for _iteration in range(max_iterations):
-        # ── Doom-loop detection ──
-        doom_prompt = check_for_doom_loop(messages)
-        if doom_prompt:
-            logger.warning("Research sub-agent doom loop detected at iteration %d", _iteration)
-            await _log("Doom loop detected — injecting corrective prompt")
-            messages.append(Message(role="user", content=doom_prompt))
+    summary_parts: list[str] = []
+    tool_count = 0
 
-        # ── Context budget: warn at 75%, hard-stop at 95% ──
-        if _total_tokens >= _RESEARCH_CONTEXT_MAX:
-            logger.warning(
-                "Research sub-agent hit context max (%d tokens) — forcing summary",
-                _total_tokens,
-            )
-            await _log(f"Context limit reached ({_total_tokens} tokens) — forcing wrap-up")
-            # Ask for a final summary with no tools
-            messages.append(Message(
-                role="user",
-                content=(
-                    "[SYSTEM: CONTEXT LIMIT REACHED] You have used all available context. "
-                    "Summarize your findings NOW. Do NOT call any more tools."
-                ),
-            ))
-            try:
-                response = await acompletion(
-                    messages=messages,
-                    tools=None,  # no tools — force text response
-                    stream=False,
-                    timeout=120,
-                    **llm_params,
-                )
-                content = response.choices[0].message.content or ""
-                return content or "Research context exhausted — no summary produced.", bool(content)
-            except Exception:
-                return "Research context exhausted and summary call failed.", False
-
-        if not _warned_context and _total_tokens >= _RESEARCH_CONTEXT_WARN:
-            _warned_context = True
-            await _log(f"Context at {_total_tokens} tokens — nudging to wrap up")
-            messages.append(Message(
-                role="user",
-                content=(
-                    "[SYSTEM: You have used 75% of your context budget. "
-                    "Start wrapping up: finish any critical lookups, then "
-                    "produce your final summary within the next 1-2 iterations.]"
-                ),
-            ))
-
-        try:
-            response = await acompletion(
-                messages=messages,
-                tools=tool_specs if tool_specs else None,
-                tool_choice="auto",
-                stream=False,
-                timeout=120,
-                **llm_params,
-            )
-        except Exception as e:
-            logger.error("Research sub-agent LLM error: %s", e)
-            return f"Research agent LLM error: {e}", False
-
-        # Track tokens
-        if response.usage:
-            _total_tokens = response.usage.total_tokens
-            await _log(f"tokens:{_total_tokens}")
-
-        choice = response.choices[0]
-        msg = choice.message
-
-        # If no tool calls, we have our final answer
-        if not msg.tool_calls:
-            await _log("Research complete.")
-            content = msg.content or "Research completed but no summary generated."
-            return content, True
-
-        # Execute tool calls and add results
-        messages.append(msg)
-        for tc in msg.tool_calls:
-            try:
-                tool_args = json.loads(tc.function.arguments)
-            except (json.JSONDecodeError, TypeError):
-                messages.append(
-                    Message(
-                        role="tool",
-                        content="Invalid tool arguments.",
-                        tool_call_id=tc.id,
-                        name=tc.function.name,
-                    )
-                )
-                continue
-
-            tool_name = tc.function.name
-            if tool_name not in RESEARCH_TOOL_NAMES:
-                messages.append(
-                    Message(
-                        role="tool",
-                        content=f"Tool '{tool_name}' not available for research.",
-                        tool_call_id=tc.id,
-                        name=tool_name,
-                    )
-                )
-                continue
-
-            try:
-                import json as _json
-
-                args_str = _json.dumps(tool_args)[:80]
-                await _log(f"▸ {tool_name}  {args_str}")
-
-                output, _success = await session.tool_router.call_tool(
-                    tool_name, tool_args, session=session
-                )
-                _tool_uses += 1
-                await _log(f"tools:{_tool_uses}")
-                # Truncate tool output for the research context
-                if len(output) > 8000:
-                    output = output[:4800] + "\n...(truncated)...\n" + output[-3200:]
-            except Exception as e:
-                output = f"Tool error: {e}"
-
-            messages.append(
-                Message(
-                    role="tool",
-                    content=output,
-                    tool_call_id=tc.id,
-                    name=tool_name,
-                )
-            )
-
-    # ── Iteration limit: try to salvage findings ──
-    await _log("Iteration limit reached — extracting summary")
-    messages.append(Message(
-        role="user",
-        content=(
-            "[SYSTEM: ITERATION LIMIT] You have reached the maximum number of research "
-            "iterations. Summarize ALL findings so far. Do NOT call any more tools."
-        ),
-    ))
     try:
-        response = await acompletion(
-            messages=messages,
-            tools=None,
-            stream=False,
-            timeout=120,
-            **llm_params,
-        )
-        content = response.choices[0].message.content or ""
-        if content:
-            return content, True
+        async for msg in query(prompt=user_content, options=options):
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock) and block.text:
+                        summary_parts.append(block.text)
+                    elif hasattr(block, "name"):  # ToolUseBlock
+                        tool_count += 1
+                        await _log(f"▸ {block.name} (tool #{tool_count})")
+            elif isinstance(msg, ResultMessage):
+                break
     except Exception as e:
-        logger.error("Research summary call failed: %s", e)
+        logger.exception("Research sub-agent failed")
+        return f"Research agent error: {e}", False
 
-    return (
-        "Research agent hit iteration limit (60). "
-        "Partial findings may be incomplete — try a more focused task.",
-        False,
-    )
+    final = "\n\n".join(p for p in summary_parts if p).strip()
+    if not final:
+        return "Research completed but no summary was generated.", False
+    await _log("Research complete.")
+    return final, True

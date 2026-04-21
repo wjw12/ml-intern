@@ -1,7 +1,7 @@
 [project]
-name = "hf-agent"
-version = "0.1.0"
-description = "Add your description here"
+name = "ml-intern"
+version = "0.2.0"
+description = "An autonomous ML engineering agent for the Hugging Face ecosystem, built on the Claude Agent SDK."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,17 +9,18 @@ dependencies = [
     "datasets>=4.4.1",
     "pydantic>=2.12.3",
     "python-dotenv>=1.2.1",
-    # Agent runtime dependencies
+    # Agent runtime (Claude Agent SDK replaces litellm + custom loop)
+    "claude-agent-sdk>=0.1.0",
+    "anthropic>=0.40.0",
     "requests>=2.33.0",
-    "litellm>=1.83.0",
     "huggingface-hub>=1.0.1",
-    "fastmcp>=3.2.0",
     "prompt-toolkit>=3.0.0",
     "thefuzz>=0.22.1",
     "rich>=13.0.0",
     "nbconvert>=7.16.6",
     "nbformat>=5.10.4",
     "whoosh>=2.7.4",
+    "beautifulsoup4>=4.12.0",
     # Web backend dependencies
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",

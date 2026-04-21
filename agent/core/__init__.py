@@ -1,12 +1,6 @@
-"""
-Core agent implementation
-Contains the main agent logic, decision-making, and orchestration
-"""
+"""Core agent implementation backed by the Claude Agent SDK."""
 
-from agent.core.tools import ToolRouter, ToolSpec, create_builtin_tools
+from agent.core.sdk_runner import SdkRunner
+from agent.core.session import Event, OpType, Session
 
-__all__ = [
-    "ToolRouter",
-    "ToolSpec",
-    "create_builtin_tools",
-]
+__all__ = ["SdkRunner", "Session", "Event", "OpType"]

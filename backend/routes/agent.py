@@ -18,7 +18,6 @@ from fastapi import (
     Request,
 )
 from fastapi.responses import StreamingResponse
-from litellm import acompletion
 from models import (
     ApprovalRequest,
     HealthResponse,
@@ -30,34 +29,28 @@ from models import (
 )
 from session_manager import MAX_SESSIONS, SessionCapacityError, session_manager
 
-from agent.core.agent_loop import _resolve_hf_router_params
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["agent"])
 
+# Claude Agent SDK routes through the bundled Claude Code CLI, so only
+# Anthropic's Claude models are available.
 AVAILABLE_MODELS = [
     {
-        "id": "anthropic/claude-opus-4-6",
-        "label": "Claude Opus 4.6",
+        "id": "claude-opus-4-7",
+        "label": "Claude Opus 4.7",
         "provider": "anthropic",
         "recommended": True,
     },
     {
-        "id": "huggingface/fireworks-ai/MiniMaxAI/MiniMax-M2.5",
-        "label": "MiniMax M2.5",
-        "provider": "huggingface",
-        "recommended": True,
+        "id": "claude-sonnet-4-6",
+        "label": "Claude Sonnet 4.6",
+        "provider": "anthropic",
     },
     {
-        "id": "huggingface/novita/moonshotai/kimi-k2.5",
-        "label": "Kimi K2.5",
-        "provider": "huggingface",
-    },
-    {
-        "id": "huggingface/novita/zai-org/glm-5",
-        "label": "GLM 5",
-        "provider": "huggingface",
+        "id": "claude-haiku-4-5-20251001",
+        "label": "Claude Haiku 4.5",
+        "provider": "anthropic",
     },
 ]
 
@@ -93,12 +86,14 @@ async def llm_health_check() -> LLMHealthResponse:
     """
     model = session_manager.config.model_name
     try:
-        llm_params = _resolve_hf_router_params(model)
-        await acompletion(
-            messages=[{"role": "user", "content": "hi"}],
+        from anthropic import AsyncAnthropic
+
+        client = AsyncAnthropic()
+        await client.messages.create(
+            model=model,
             max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
             timeout=10,
-            **llm_params,
         )
         return LLMHealthResponse(status="ok", model=model)
     except Exception as e:
@@ -162,28 +157,26 @@ async def generate_title(
     request: SubmitRequest, user: dict = Depends(get_current_user)
 ) -> dict:
     """Generate a short title for a chat session based on the first user message."""
+    from anthropic import AsyncAnthropic
+
     model = session_manager.config.model_name
-    llm_params = _resolve_hf_router_params(model)
     try:
-        response = await acompletion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Generate a very short title (max 6 words) for a chat conversation "
-                        "that starts with the following user message. "
-                        "Reply with ONLY the title, no quotes, no punctuation at the end."
-                    ),
-                },
-                {"role": "user", "content": request.text[:500]},
-            ],
+        client = AsyncAnthropic()
+        response = await client.messages.create(
+            model=model,
             max_tokens=20,
-            temperature=0.3,
+            system=(
+                "Generate a very short title (max 6 words) for a chat "
+                "conversation that starts with the following user message. "
+                "Reply with ONLY the title, no quotes, no punctuation at the end."
+            ),
+            messages=[{"role": "user", "content": request.text[:500]}],
             timeout=8,
-            **llm_params,
         )
-        title = response.choices[0].message.content.strip().strip('"').strip("'")
-        # Safety: cap at 50 chars
+        raw = "".join(
+            b.text for b in response.content if getattr(b, "type", "") == "text"
+        )
+        title = raw.strip().strip('"').strip("'")
         if len(title) > 50:
             title = title[:50].rstrip() + "…"
         return {"title": title}
@@ -426,7 +419,10 @@ async def get_session_messages(
     agent_session = session_manager.sessions.get(session_id)
     if not agent_session or not agent_session.is_active:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
-    return [msg.model_dump() for msg in agent_session.session.context_manager.items]
+    # Under the Claude Agent SDK the message history lives inside the CLI
+    # and isn't directly addressable, so we surface the event trajectory
+    # (what the UI has always rendered from anyway).
+    return list(agent_session.session.logged_events)
 
 
 @router.post("/undo/{session_id}")
