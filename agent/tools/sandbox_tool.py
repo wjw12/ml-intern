@@ -261,6 +261,11 @@ def _make_tool_handler(sandbox_tool_name: str):
     return handler
 
 
-# (The earlier `get_sandbox_tools()` factory that returned ToolSpec objects is
-# no longer needed — sdk_tools.py consumes SANDBOX_CREATE_TOOL_SPEC,
-# sandbox_create_handler, Sandbox.TOOLS, and _make_tool_handler directly.)
+def get_tool_defs() -> list[tuple[str, dict, "Callable"]]:
+    """Return (name, spec_dict, handler) triples for sandbox_create + operation tools."""
+    defs: list[tuple[str, dict, "Callable"]] = [
+        (SANDBOX_CREATE_TOOL_SPEC["name"], SANDBOX_CREATE_TOOL_SPEC, sandbox_create_handler),
+    ]
+    for op_name, op_spec in Sandbox.TOOLS.items():
+        defs.append((op_name, op_spec, _make_tool_handler(op_name)))
+    return defs

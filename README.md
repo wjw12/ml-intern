@@ -28,7 +28,6 @@ ml-intern
 Create a `.env` file in the project root (or export these in your shell):
 
 ```bash
-ANTHROPIC_API_KEY=<your-anthropic-api-key>   # required — Claude Agent SDK
 HF_TOKEN=<your-hugging-face-token>           # required — HF tool calls, job submission
 GITHUB_TOKEN=<github-personal-access-token>  # optional — higher GitHub rate limits
 ```

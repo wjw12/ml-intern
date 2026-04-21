@@ -66,15 +66,28 @@ async def _run_user_input(runner: SdkRunner, session: Session, text: str) -> Non
 
 
 async def process_submission(
-    session: Session, runner: SdkRunner, submission: Any
+    session: Session, runner: SdkRunner, submission: Any,
+    run_task: list[asyncio.Task | None] | None = None,
 ) -> bool:
-    """Dispatch one submission. Returns False on shutdown."""
+    """Dispatch one submission. Returns False on shutdown.
+
+    ``run_task`` is a single-element list holding the background task for
+    the current ``run_turn`` call (if any).  USER_INPUT spawns a new task
+    instead of awaiting directly so the loop stays free to dequeue
+    EXEC_APPROVAL and INTERRUPT ops while the turn is in progress.
+    """
+    if run_task is None:
+        run_task = [None]
+
     op = submission.operation
     logger.debug("op=%s", op.op_type.value)
 
     if op.op_type == OpType.USER_INPUT:
+        # Wait for any prior turn to finish before starting a new one.
+        if run_task[0] is not None and not run_task[0].done():
+            await run_task[0]
         text = (op.data or {}).get("text", "")
-        await _run_user_input(runner, session, text)
+        run_task[0] = asyncio.create_task(_run_user_input(runner, session, text))
         return True
 
     if op.op_type == OpType.EXEC_APPROVAL:
@@ -85,6 +98,12 @@ async def process_submission(
     if op.op_type == OpType.INTERRUPT:
         session.cancel()
         await runner.interrupt()
+        if run_task[0] is not None and not run_task[0].done():
+            run_task[0].cancel()
+            try:
+                await run_task[0]
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         return True
 
     if op.op_type == OpType.COMPACT:
@@ -102,6 +121,13 @@ async def process_submission(
         return True
 
     if op.op_type == OpType.SHUTDOWN:
+        # Wait for any in-flight turn to finish before shutting down.
+        if run_task[0] is not None and not run_task[0].done():
+            run_task[0].cancel()
+            try:
+                await run_task[0]
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         if session.config.save_sessions:
             session.save_and_upload_detached(session.config.session_dataset_repo)
         session.is_running = False
@@ -139,6 +165,9 @@ async def submission_loop(
             directory="session_logs", repo_id=config.session_dataset_repo
         )
 
+    # Shared mutable slot so process_submission can track the background task.
+    run_task: list[asyncio.Task | None] = [None]
+
     try:
         hf_username = await _resolve_hf_username(hf_token)
         tool_count = await runner.start(hf_username=hf_username)
@@ -153,7 +182,9 @@ async def submission_loop(
         while session.is_running:
             submission = await submission_queue.get()
             try:
-                should_continue = await process_submission(session, runner, submission)
+                should_continue = await process_submission(
+                    session, runner, submission, run_task
+                )
                 if not should_continue:
                     break
             except asyncio.CancelledError:
@@ -165,6 +196,13 @@ async def submission_loop(
                     Event(event_type="error", data={"error": str(e)})
                 )
     finally:
+        # Ensure the background turn task is cleaned up.
+        if run_task[0] is not None and not run_task[0].done():
+            run_task[0].cancel()
+            try:
+                await run_task[0]
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         if session.config.save_sessions and session.is_running:
             try:
                 session.save_and_upload_detached(session.config.session_dataset_repo)

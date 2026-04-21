@@ -153,59 +153,26 @@ async def build_hf_tools_server(session: Any, local_mode: bool = False):
 
     # Sandbox vs local mode — filesystem + bash tools
     if local_mode:
-        from agent.tools.local_tools import _HANDLERS, _LOCAL_TOOL_SPECS  # type: ignore
+        from agent.tools.local_tools import get_tool_defs as _local_defs
 
-        for name, spec in _LOCAL_TOOL_SPECS.items():
-            handler = _HANDLERS[name]
+        for name, spec, handler in _local_defs():
             wrapped = _wrap_handler(handler, session)
             decorated = _register(name, spec["description"], spec["parameters"], wrapped)
             tool_fns.append(decorated)
             tool_names.append(name)
     else:
-        from agent.tools.sandbox_client import Sandbox
-        from agent.tools.sandbox_tool import (
-            SANDBOX_CREATE_TOOL_SPEC,
-            _make_tool_handler,
-            sandbox_create_handler,
-        )
+        from agent.tools.sandbox_tool import get_tool_defs as _sandbox_defs
 
-        wrapped = _wrap_handler(sandbox_create_handler, session)
-        decorated = _register(
-            SANDBOX_CREATE_TOOL_SPEC["name"],
-            SANDBOX_CREATE_TOOL_SPEC["description"],
-            SANDBOX_CREATE_TOOL_SPEC["parameters"],
-            wrapped,
-        )
-        tool_fns.append(decorated)
-        tool_names.append(SANDBOX_CREATE_TOOL_SPEC["name"])
-
-        for op_name in Sandbox.TOOLS:
-            op_spec = Sandbox.TOOLS[op_name]
-            wrapped = _wrap_handler(_make_tool_handler(op_name), session)
+        for name, spec, handler in _sandbox_defs():
+            wrapped = _wrap_handler(handler, session)
             decorated = _register(
-                op_name, op_spec["description"], op_spec["parameters"], wrapped
+                name, spec["description"], spec["parameters"], wrapped
             )
             tool_fns.append(decorated)
-            tool_names.append(op_name)
+            tool_names.append(name)
 
     server = create_sdk_mcp_server(
         name="hf-tools", version="1.0.0", tools=tool_fns
     )
     logger.info("Built hf-tools MCP server with %d tools", len(tool_names))
     return server, tool_names
-
-
-# Names of tools that are read-only and safe for the research sub-agent.
-RESEARCH_TOOL_NAMES: set[str] = {
-    "read",
-    "bash",
-    EXPLORE_HF_DOCS_TOOL_SPEC["name"],
-    HF_DOCS_FETCH_TOOL_SPEC["name"],
-    "find_hf_api",
-    HF_PAPERS_TOOL_SPEC["name"],
-    GITHUB_FIND_EXAMPLES_TOOL_SPEC["name"],
-    GITHUB_LIST_REPOS_TOOL_SPEC["name"],
-    GITHUB_READ_FILE_TOOL_SPEC["name"],
-    HF_INSPECT_DATASET_TOOL_SPEC["name"],
-    HF_REPO_FILES_TOOL_SPEC["name"],
-}

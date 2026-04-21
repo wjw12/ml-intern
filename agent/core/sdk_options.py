@@ -65,14 +65,19 @@ def _render_system_prompt(
     return body + context
 
 
-def _mcp_servers_from_config(config: Config) -> dict[str, Any]:
+def _mcp_servers_from_config(
+    config: Config, hf_token: str | None = None
+) -> dict[str, Any]:
     """Translate our Config.mcpServers into the dict shape the SDK expects."""
     out: dict[str, Any] = {}
     for name, server in config.mcpServers.items():
         if isinstance(server, RemoteMCPServer):
             spec: dict[str, Any] = {"type": server.transport, "url": server.url}
-            if server.headers:
-                spec["headers"] = dict(server.headers)
+            headers = dict(server.headers) if server.headers else {}
+            if hf_token:
+                headers.setdefault("Authorization", f"Bearer {hf_token}")
+            if headers:
+                spec["headers"] = headers
             out[name] = spec
         elif isinstance(server, StdioMCPServer):
             out[name] = {
@@ -101,7 +106,7 @@ async def build_options(
     hf_server, hf_tool_names = await build_hf_tools_server(session, local_mode=local_mode)
 
     mcp_servers: dict[str, Any] = {"hf-tools": hf_server}
-    mcp_servers.update(_mcp_servers_from_config(session.config))
+    mcp_servers.update(_mcp_servers_from_config(session.config, hf_token=session.hf_token))
 
     # Pre-approve our HF tools (we gate the sensitive ones via the hook instead).
     allowed_tools = [f"mcp__hf-tools__{n}" for n in hf_tool_names]

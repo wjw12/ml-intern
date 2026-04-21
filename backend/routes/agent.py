@@ -74,27 +74,36 @@ async def health_check() -> HealthResponse:
     )
 
 
+_HEALTH_MODEL = "claude-haiku-4-5-20251001"
+
+
 @router.get("/health/llm", response_model=LLMHealthResponse)
 async def llm_health_check() -> LLMHealthResponse:
-    """Check if the LLM provider is reachable and the API key is valid.
+    """Check if the Claude Agent SDK is reachable.
 
-    Makes a minimal 1-token completion call.  Catches common errors:
-    - 401 → invalid API key
+    Fires a minimal `query()` with max_turns=1 and no tools.
+    Catches common errors:
+    - 401 → invalid credentials / CLI not authenticated
     - 402/insufficient_quota → out of credits
     - 429 → rate limited
     - timeout / network → provider unreachable
     """
     model = session_manager.config.model_name
     try:
-        from anthropic import AsyncAnthropic
-
-        client = AsyncAnthropic()
-        await client.messages.create(
-            model=model,
-            max_tokens=1,
-            messages=[{"role": "user", "content": "hi"}],
-            timeout=10,
+        from claude_agent_sdk import (
+            ClaudeAgentOptions,
+            ResultMessage,
+            query,
         )
+
+        options = ClaudeAgentOptions(
+            model=_HEALTH_MODEL,
+            max_turns=1,
+            permission_mode="default",
+        )
+        async for msg in query(prompt="hi", options=options):
+            if isinstance(msg, ResultMessage):
+                break
         return LLMHealthResponse(status="ok", model=model)
     except Exception as e:
         err_str = str(e).lower()
@@ -157,25 +166,34 @@ async def generate_title(
     request: SubmitRequest, user: dict = Depends(get_current_user)
 ) -> dict:
     """Generate a short title for a chat session based on the first user message."""
-    from anthropic import AsyncAnthropic
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ClaudeAgentOptions,
+        ResultMessage,
+        TextBlock,
+        query,
+    )
 
-    model = session_manager.config.model_name
     try:
-        client = AsyncAnthropic()
-        response = await client.messages.create(
-            model=model,
-            max_tokens=20,
-            system=(
+        options = ClaudeAgentOptions(
+            model=_HEALTH_MODEL,
+            system_prompt=(
                 "Generate a very short title (max 6 words) for a chat "
                 "conversation that starts with the following user message. "
                 "Reply with ONLY the title, no quotes, no punctuation at the end."
             ),
-            messages=[{"role": "user", "content": request.text[:500]}],
-            timeout=8,
+            max_turns=1,
+            permission_mode="default",
         )
-        raw = "".join(
-            b.text for b in response.content if getattr(b, "type", "") == "text"
-        )
+        parts: list[str] = []
+        async for msg in query(prompt=request.text[:500], options=options):
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock) and block.text:
+                        parts.append(block.text)
+            elif isinstance(msg, ResultMessage):
+                break
+        raw = "".join(parts)
         title = raw.strip().strip('"').strip("'")
         if len(title) > 50:
             title = title[:50].rstrip() + "…"

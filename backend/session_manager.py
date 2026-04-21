@@ -210,6 +210,10 @@ class SessionManager:
         agent_session.broadcaster = broadcaster
         broadcast_task = asyncio.create_task(broadcaster.run())
 
+        # Shared mutable slot so process_submission can track the background
+        # run_turn task — keeps the loop free for EXEC_APPROVAL / INTERRUPT.
+        run_task: list[asyncio.Task | None] = [None]
+
         try:
             hf_username = await _resolve_hf_username(agent_session.hf_token)
             tool_count = await runner.start(hf_username=hf_username)
@@ -228,7 +232,7 @@ class SessionManager:
                     agent_session.is_processing = True
                     try:
                         should_continue = await process_submission(
-                            session, runner, submission
+                            session, runner, submission, run_task
                         )
                     finally:
                         agent_session.is_processing = False

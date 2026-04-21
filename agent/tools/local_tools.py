@@ -404,3 +404,8 @@ _HANDLERS = {
     "write": _write_handler,
     "edit": _edit_handler,
 }
+
+
+def get_tool_defs() -> list[tuple[str, dict, "Callable"]]:
+    """Return (name, spec_dict, handler) triples for every local tool."""
+    return [(name, _LOCAL_TOOL_SPECS[name], _HANDLERS[name]) for name in _HANDLERS]
