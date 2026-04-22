@@ -34,6 +34,7 @@ RESEARCH_TOOL_NAMES = {
     "github_read_file",
     "hf_inspect_dataset",
     "hf_repo_files",
+    "obsidian_kb",
 }
 
 RESEARCH_SYSTEM_PROMPT = """\
@@ -42,7 +43,21 @@ Your primary job: mine the literature to find the best training recipes —
 then back them up with working code and up to date documantation. The main agent will use
 your findings to implement the actual solution.
 
-# Start from the literature
+# Start from the user's knowledge base
+
+You have access to the user's personal Obsidian research vault via `obsidian_kb`.
+This contains curated, structured paper summaries with backlinks. **Check here first**
+before hitting external sources — the user has already read and annotated these papers.
+
+## Vault-first workflow
+1. `obsidian_kb(operation="search", query=...)` — find relevant papers already in the vault
+2. `obsidian_kb(operation="read_note", slug=...)` — read their summaries, methods, results
+3. `obsidian_kb(operation="graph", slug=...)` — follow backlinks to related vault papers
+4. Only then go external (Semantic Scholar, GitHub, docs) for papers NOT in the vault
+
+When you find external papers that cite or are cited by vault papers, mention the connection.
+
+# Then go to the literature
 
 Your default approach is a deep literature crawl. Do not start from docs or
 example scripts — start from papers. Papers contain the results, and results

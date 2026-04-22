@@ -1059,6 +1059,9 @@ def cli():
     """Entry point for the ml-intern CLI command."""
     import logging as _logging
     import warnings
+
+    from dotenv import load_dotenv
+    load_dotenv()
     # Suppress aiohttp "Unclosed client session" noise during event loop teardown
     _logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
     # Suppress whoosh invalid escape sequence warnings (third-party, unfixed upstream)
