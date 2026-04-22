@@ -38,6 +38,7 @@ from agent.tools.github_read_file import (
 )
 from agent.tools.hf_repo_files_tool import HF_REPO_FILES_TOOL_SPEC, hf_repo_files_handler
 from agent.tools.obsidian_kb_tool import OBSIDIAN_KB_TOOL_SPEC, obsidian_kb_handler
+from agent.tools.obsidian_save_tool import OBSIDIAN_SAVE_TOOL_SPEC, obsidian_save_handler
 from agent.tools.hf_repo_git_tool import HF_REPO_GIT_TOOL_SPEC, hf_repo_git_handler
 from agent.tools.jobs_tool import HF_JOBS_TOOL_SPEC, hf_jobs_handler
 from agent.tools.papers_tool import HF_PAPERS_TOOL_SPEC, hf_papers_handler
@@ -103,6 +104,7 @@ _BASE_TOOL_DEFS: list[tuple[str, dict]] = [
     (GITHUB_LIST_REPOS_TOOL_SPEC["name"], GITHUB_LIST_REPOS_TOOL_SPEC),
     (GITHUB_READ_FILE_TOOL_SPEC["name"], GITHUB_READ_FILE_TOOL_SPEC),
     (OBSIDIAN_KB_TOOL_SPEC["name"], OBSIDIAN_KB_TOOL_SPEC),
+    (OBSIDIAN_SAVE_TOOL_SPEC["name"], OBSIDIAN_SAVE_TOOL_SPEC),
 ]
 
 _BASE_HANDLERS: dict[str, Handler] = {
@@ -119,6 +121,7 @@ _BASE_HANDLERS: dict[str, Handler] = {
     GITHUB_LIST_REPOS_TOOL_SPEC["name"]: github_list_repos_handler,
     GITHUB_READ_FILE_TOOL_SPEC["name"]: github_read_file_handler,
     OBSIDIAN_KB_TOOL_SPEC["name"]: obsidian_kb_handler,
+    OBSIDIAN_SAVE_TOOL_SPEC["name"]: obsidian_save_handler,
 }
 
 
