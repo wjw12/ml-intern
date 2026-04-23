@@ -213,6 +213,7 @@ class _StreamBuffer:
     def __init__(self, console):
         self._console = console
         self._buffer = ""
+        self.last_finished = ""
 
     def add_chunk(self, text: str):
         self._buffer += text
@@ -221,10 +222,15 @@ class _StreamBuffer:
         """Render the accumulated text as markdown, then reset."""
         if self._buffer.strip():
             print_markdown(self._buffer)
+            self.last_finished = self._buffer
         self._buffer = ""
 
     def discard(self):
         self._buffer = ""
+
+
+# Module-level holder for the last assistant response (used by /save)
+_last_assistant_response: list[str] = [""]
 
 
 async def event_listener(
@@ -258,6 +264,7 @@ async def event_listener(
                 content = event.data.get("content", "") if event.data else ""
                 if content:
                     print_markdown(content)
+                    _last_assistant_response[0] = content
             elif event.event_type == "assistant_chunk":
                 content = event.data.get("content", "") if event.data else ""
                 if content:
@@ -265,6 +272,8 @@ async def event_listener(
             elif event.event_type == "assistant_stream_end":
                 shimmer.stop()
                 stream_buf.finish()
+                if stream_buf.last_finished:
+                    _last_assistant_response[0] = stream_buf.last_finished
             elif event.event_type == "tool_call":
                 shimmer.stop()
                 stream_buf.discard()
@@ -735,11 +744,86 @@ def _handle_slash_command(
             operation=Operation(op_type=OpType.CONTEXT_USAGE, data={"source": "status"}),
         )
 
+    if command == "/save":
+        import re as _re
+        from datetime import date as _date
+
+        content = _last_assistant_response[0]
+        if not content.strip():
+            print("Nothing to save — no assistant response yet.")
+            return None
+
+        vault_root = Path(os.environ.get("OBSIDIAN_VAULT_PATH", "/srv/syncthing/obsidian-lab/Lab"))
+        intern_dir = vault_root / "wiki" / "intern"
+        intern_dir.mkdir(parents=True, exist_ok=True)
+
+        # Extract heading from first markdown heading or first line
+        heading_match = _re.search(r"^#+\s+(.+)", content, _re.MULTILINE)
+        heading = heading_match.group(1).strip() if heading_match else content.split("\n", 1)[0][:60]
+        slug = _re.sub(r"[^a-z0-9]+", "-", heading.lower()).strip("-")[:80]
+
+        today = _date.today().isoformat()
+        filename = f"{today}-{slug}.md"
+        filepath = intern_dir / filename
+
+        filepath.write_text(content, encoding="utf-8")
+        print(f"Saved: wiki/intern/{filename}")
+        return None
+
+    if command == "/resume":
+        from claude_agent_sdk._internal.sessions import list_sessions
+        from datetime import datetime as _dt
+
+        sessions = list_sessions(directory=os.getcwd(), limit=10)
+        if not sessions:
+            print("No previous sessions found.")
+            return None
+
+        if not arg:
+            # Show picker
+            print("Recent sessions:")
+            for i, s in enumerate(sessions, 1):
+                ts = _dt.fromtimestamp(s.last_modified / 1000).strftime("%m-%d %H:%M")
+                label = s.custom_title or (s.first_prompt or "")[:70]
+                print(f"  {i}. [{ts}] {label}")
+            print("Use /resume <number> to resume a session.")
+            return None
+
+        try:
+            idx = int(arg) - 1
+            if not (0 <= idx < len(sessions)):
+                raise ValueError
+        except ValueError:
+            print(f"Invalid selection. Use 1-{len(sessions)}.")
+            return None
+
+        chosen = sessions[idx]
+        config.resume_session_id = chosen.session_id
+        print(f"Resuming: {chosen.custom_title or chosen.first_prompt or chosen.session_id}")
+        submission_id[0] += 1
+        return Submission(
+            id=f"sub_{submission_id[0]}",
+            operation=Operation(op_type=OpType.RESUME),
+        )
+
     print(f"Unknown command: {command}. Type /help for available commands.")
     return None
 
 
-async def main():
+def _resolve_resume_session(value: str) -> str | None:
+    """Resolve --resume arg to a session ID. 'latest' picks the most recent."""
+    from claude_agent_sdk._internal.sessions import list_sessions
+
+    if value != "latest":
+        return value  # assume it's a session ID
+    sessions = list_sessions(directory=os.getcwd(), limit=1)
+    if sessions:
+        return sessions[0].session_id
+    print("No previous sessions found.")
+    return None
+
+
+async def main(resume: str | None = None):
     """Interactive chat with the agent"""
 
     # Clear screen
@@ -775,6 +859,8 @@ async def main():
     # Start agent loop in background
     config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
     config = load_config(config_path)
+    if resume:
+        config.resume_session_id = _resolve_resume_session(resume)
 
     # Session holder for interrupt/model/status access
     session_holder = [None]
@@ -1074,6 +1160,8 @@ def cli():
                         help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
     parser.add_argument("--no-stream", action="store_true",
                         help="Disable token streaming (use non-streaming LLM calls)")
+    parser.add_argument("--resume", nargs="?", const="latest", default=None,
+                        help="Resume a conversation (latest, or pass a session ID)")
     args = parser.parse_args()
 
     try:
@@ -1083,7 +1171,7 @@ def cli():
                 max_iter = 10_000  # effectively unlimited
             asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream))
         else:
-            asyncio.run(main())
+            asyncio.run(main(resume=args.resume))
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
 

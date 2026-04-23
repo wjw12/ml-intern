@@ -130,5 +130,6 @@ async def build_options(
         hooks=hooks,
         permission_mode=permission_mode,
         max_turns=max_turns,
+        resume=session.config.resume_session_id,
     )
     return options, hf_tool_names

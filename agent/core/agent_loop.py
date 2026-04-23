@@ -187,6 +187,18 @@ async def submission_loop(
         while session.is_running:
             submission = await submission_queue.get()
             try:
+                # Handle RESUME inline — needs to rebuild the runner
+                if submission.operation.op_type == OpType.RESUME:
+                    if run_task[0] is not None and not run_task[0].done():
+                        await run_task[0]
+                    await runner.close()
+                    runner = SdkRunner(session, local_mode=local_mode)
+                    tool_count = await runner.start(hf_username=hf_username)
+                    await session.send_event(
+                        Event(event_type="ready", data={"message": "Resumed", "tool_count": tool_count})
+                    )
+                    continue
+
                 should_continue = await process_submission(
                     session, runner, submission, run_task
                 )

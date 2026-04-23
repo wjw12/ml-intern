@@ -32,6 +32,7 @@ class OpType(Enum):
     COMPACT = "compact"
     CONTEXT_USAGE = "context_usage"
     SHUTDOWN = "shutdown"
+    RESUME = "resume"
 
 
 @dataclass

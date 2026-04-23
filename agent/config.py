@@ -41,6 +41,7 @@ class Config(BaseModel):
     auto_save_interval: int = 3  # Save every N user turns (0 = disabled)
     yolo_mode: bool = False  # Auto-approve all tool calls without confirmation
     max_iterations: int = 300  # Max agent turns per user message (-1 = unlimited)
+    resume_session_id: str | None = None  # Session ID to resume (None = fresh)
 
     # Permission control parameters
     confirm_cpu_jobs: bool = True

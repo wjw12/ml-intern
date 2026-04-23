@@ -323,6 +323,8 @@ HELP_TEXT = f"""\
 {_I}  [cyan]/model[/cyan] [id]      Show available models or switch
 {_I}  [cyan]/yolo[/cyan]            Toggle auto-approve mode
 {_I}  [cyan]/status[/cyan]          Model, turns & context usage
+{_I}  [cyan]/save[/cyan]            Save last response to Obsidian wiki/intern
+{_I}  [cyan]/resume[/cyan]          Resume the most recent conversation
 {_I}  [cyan]/quit[/cyan]            Exit"""
 
 
